@@ -1,0 +1,67 @@
+index,title,chapters,words
+1,Genesis,50,32046
+2,Exodus,40,25957
+3,Leviticus,27,18852
+4,Numbers,36,25048
+5,Deuteronomy,34,23008
+6,Joshua,24,15671
+7,Judges,21,15385
+8,Ruth,4,2039
+9,1 Samuel,31,20837
+10,2 Samuel,24,17170
+11,1 Kings,22,20361
+12,2 Kings,25,18784
+13,1 Chronicles,29,16664
+14,2 Chronicles,36,21349
+15,Ezra,10,5605
+16,Nehemiah,13,8507
+17,Esther,10,4932
+18,Job,42,12674
+19,Psalms,150,30147
+20,Proverbs,31,9921
+21,Ecclesiastes,12,4537
+22,Song of Solomon,8,2020
+23,Isaiah,66,25608
+24,Jeremiah,52,33002
+25,Lamentations,5,2324
+26,Ezekiel,48,29918
+27,Daniel,12,9001
+28,Hosea,14,3615
+29,Joel,3,1447
+30,Amos,9,3027
+31,Obadiah,1,440
+32,Jonah,4,1082
+33,Micah,7,2118
+34,Nahum,3,855
+35,Habakkuk,3,1011
+36,Zephaniah,3,1141
+37,Haggai,2,926
+38,Zechariah,14,4855
+39,Malachi,4,1320
+40,Matthew,28,18346
+41,Mark,16,11304
+42,Luke,24,19482
+43,John,21,15635
+44,Acts,28,18450
+45,Romans,16,7111
+46,1 Corinthians,16,6830
+47,2 Corinthians,13,4477
+48,Galatians,6,2230
+49,Ephesians,6,2422
+50,Philippians,4,1629
+51,Colossians,4,1582
+52,1 Thessalonians,5,1481
+53,2 Thessalonians,3,823
+54,1 Timothy,6,1591
+55,2 Timothy,4,1238
+56,Titus,3,659
+57,Philemon,1,335
+58,Hebrews,13,4953
+59,James,5,1742
+60,1 Peter,5,1684
+61,2 Peter,3,1099
+62,1 John,5,2141
+63,2 John,1,245
+64,3 John,1,219
+65,Jude,1,461
+66,Revelation,22,9851
