@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let filename = format!("/home/jim/Documents/bibleplans/plan_{}", Utc::now().timestamp());
     let path = Path::new(&filename);
 
-    let bible_data: Vec<Data> = get_data("book_chapter.csv", book_index)?;
+    let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
 
     let total_word_count: i32 = bible_data.iter().map(|b| b.words).sum();
     let avg_daily_word_count = total_word_count / duration;
