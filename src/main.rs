@@ -30,7 +30,7 @@ struct ChaptersDate {
 
 fn main() -> Result<(), Box<dyn Error>> {
 
-    // Entire Bible 1..67, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
+    // Entire Bible 1..=66, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
     let book_index: Vec<i32> = (1..=66).collect();
 
     // Set the dates for reading and get the reading duration in days
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
-    let filename = format!("/home/jim/Documents/bibleplans/plan_{}", Utc::now().timestamp());
+    let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
     let path = Path::new(&filename);
 
     let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
