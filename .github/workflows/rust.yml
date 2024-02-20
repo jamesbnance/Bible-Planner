@@ -21,9 +21,6 @@ jobs:
         toolchain: stable
         override: true
 
-    - name: Create outputs directory
-      run: mkdir -p .././outputs
-
     - name: Build
       uses: actions-rs/cargo@v1
       with:
