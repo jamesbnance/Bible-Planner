@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 // Create a vector with title, number of chapters, avg words per chapter
 fn get_data(file_path: &str, book_index: Vec<i32>) -> Result<Vec<Data>, Box<dyn Error>> {
-    let bible_file = File::open(file_path).expect("Unable to open file");
+    let bible_file = File::open(file_path).expect(format!("Unable to open file {}", file_path).as_str());
     let mut reader = ReaderBuilder::new().from_reader(bible_file);
     let mut data = Vec::new();
     for result in reader.deserialize() {
