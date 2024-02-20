@@ -1,7 +1,7 @@
 use std:: env;
 use std::fs::File;
 use std::io::Write;
-use std::path::{ Path, PathBuf };
+use std::path::PathBuf;
 use std::error::Error;
 use chrono::{ Duration, NaiveDate, Utc };
 use csv::ReaderBuilder;
@@ -41,8 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let duration: i32 = get_duration(start_date, end_date);
 
     // let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
-    let filename = format!("/outputs/reading_plan_{}", Utc::now().timestamp());
-    let path = Path::new(&filename);
+    let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
     let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
 
@@ -59,15 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let final_vec: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, end_date, avg_daily_word_count);
 
     // Write final plan to file
-    if path.exists() {
-        println!("File exists");
-    } else {
-        match write_to_file(&filename, final_vec) {
-            Ok(_) => println!("Successfully wrote to file {}", &filename),
-            Err(e) => {
-                eprintln!("Failed to write to file: {}", e);
-                std::process::exit(1);
-            },
+    match write_to_file(&filename, final_vec) {
+        Ok(_) => println!("Successfully wrote to file {}", &filename),
+        Err(e) => {
+            eprintln!("Failed to write to file: {}", e);
+            std::process::exit(1);
         }
     }
     Ok(())
