@@ -100,6 +100,12 @@ fn get_books_in_days(bible_data: Vec<Data>, duration: i32) -> Vec<ChaptersDays> 
     let mut temp_chapters: i32 = 0;
     let mut temp_days: f32 = 0.0;
 
+    let total_chapter_count: i32 = bible_data.iter().map(|b| b.chapters).sum();
+    if duration > total_chapter_count {
+        println!("\nWarning! the number of days exceeds the number of chapters: {} > {}\n",
+            duration, total_chapter_count
+        );
+    }
     let total_word_count: i32 = bible_data.iter().map(|b| b.words).sum();
 
     for book in bible_data {
