@@ -1,6 +1,7 @@
+use std:: env;
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
+use std::path::PathBuf;
 use std::error::Error;
 use chrono::{ Duration, NaiveDate, Utc };
 use csv::ReaderBuilder;
@@ -30,7 +31,7 @@ struct ChaptersDate {
 
 fn main() -> Result<(), Box<dyn Error>> {
 
-    // Entire Bible 1..67, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
+    // Entire Bible 1..=66, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
     let book_index: Vec<i32> = (1..=66).collect();
 
     // Set the dates for reading and get the reading duration in days
@@ -39,10 +40,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
-    let filename = format!("/home/jim/Documents/bibleplans/plan_{}", Utc::now().timestamp());
-    let path = Path::new(&filename);
+    // let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
+    let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
-    let bible_data: Vec<Data> = get_data("book_chapter.csv", book_index)?;
+    let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
 
     let total_word_count: i32 = bible_data.iter().map(|b| b.words).sum();
     let avg_daily_word_count = total_word_count / duration;
@@ -57,15 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let final_vec: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, end_date, avg_daily_word_count);
 
     // Write final plan to file
-    if path.exists() {
-        println!("File exists");
-    } else {
-        match write_to_file(&filename, final_vec) {
-            Ok(_) => println!("Successfully wrote to file {}", &filename),
-            Err(e) => {
-                eprintln!("Failed to write to file: {}", e);
-                std::process::exit(1);
-            },
+    match write_to_file(&filename, final_vec) {
+        Ok(_) => println!("Successfully wrote to file {}", &filename),
+        Err(e) => {
+            eprintln!("Failed to write to file: {}", e);
+            std::process::exit(1);
         }
     }
     Ok(())
@@ -73,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 // Create a vector with title, number of chapters, avg words per chapter
 fn get_data(file_path: &str, book_index: Vec<i32>) -> Result<Vec<Data>, Box<dyn Error>> {
-    let bible_file = File::open(file_path).expect("Unable to open file");
+    let bible_file = File::open(file_path).expect(format!("Unable to open file {}", file_path).as_str());
     let mut reader = ReaderBuilder::new().from_reader(bible_file);
     let mut data = Vec::new();
     for result in reader.deserialize() {
@@ -100,6 +97,12 @@ fn get_books_in_days(bible_data: Vec<Data>, duration: i32) -> Vec<ChaptersDays> 
     let mut temp_chapters: i32 = 0;
     let mut temp_days: f32 = 0.0;
 
+    let total_chapter_count: i32 = bible_data.iter().map(|b| b.chapters).sum();
+    if duration > total_chapter_count {
+        println!("\nWarning! the number of days exceeds the number of chapters: {} > {}\n",
+            duration, total_chapter_count
+        );
+    }
     let total_word_count: i32 = bible_data.iter().map(|b| b.words).sum();
 
     for book in bible_data {
@@ -338,7 +341,9 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDate>, i: usize, title: String,
 }
 
 fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Result<()> {
-    let mut file = File::create(filename)?;
+    let mut file_path = PathBuf::from(env::current_dir()?);
+    file_path.push(filename);
+    let mut file = File::create(file_path)?;
 
     writeln!(file, "Date         Read through")?;
     for t in final_vec {
