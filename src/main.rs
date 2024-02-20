@@ -1,6 +1,7 @@
+use std:: env;
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
+use std::path::{ Path, PathBuf };
 use std::error::Error;
 use chrono::{ Duration, NaiveDate, Utc };
 use csv::ReaderBuilder;
@@ -39,7 +40,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
-    let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
+    // let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
+    let filename = format!("/outputs/reading_plan_{}", Utc::now().timestamp());
     let path = Path::new(&filename);
 
     let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
@@ -344,7 +346,9 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDate>, i: usize, title: String,
 }
 
 fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Result<()> {
-    let mut file = File::create(filename)?;
+    let mut file_path = PathBuf::from(env::current_dir()?);
+    file_path.push(filename);
+    let mut file = File::create(file_path)?;
 
     writeln!(file, "Date         Read through")?;
     for t in final_vec {
