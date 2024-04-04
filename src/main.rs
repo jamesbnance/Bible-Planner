@@ -1,4 +1,4 @@
-use std:: env;
+use std::{ env, io::stdout};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -345,6 +345,9 @@ fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Resul
     file_path.push(filename);
     let mut file = File::create(file_path)?;
 
+    let mut old_title = String::new();
+    let mut last_chapter: i32 = 0;
+
     writeln!(file, "Date         Read through")?;
     for t in final_vec {
         let titles = t.titles.join(", ");
@@ -353,9 +356,16 @@ fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Resul
         } else if titles == "Catch-up day" {
             "".to_string()
         } else {
-            t.chapters.to_string()
+            if titles == old_title {
+                format!("{}-{}", last_chapter + 1, t.chapters)
+            } else {
+                format!("1-{}", t.chapters)
+            }
         };
         writeln!(file, "{} {} {}", t.date.format("%b %e, %Y"), titles, chapters)?;
+
+        old_title = titles;
+        last_chapter = t.chapters;
     }
     Ok(())
 }
