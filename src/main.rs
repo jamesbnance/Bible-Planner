@@ -1,4 +1,4 @@
-use std::{ env, io::stdout};
+use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let duration: i32 = get_duration(start_date, end_date);
 
     // let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
-    let filename = format!("reading_plans/reading_plan_{}", Utc::now().timestamp());
+    let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
     let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
 
