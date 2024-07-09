@@ -1,4 +1,4 @@
-use std:: env;
+use std::{ env, io::stdout};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let duration: i32 = get_duration(start_date, end_date);
 
     // let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
-    let filename = format!("reading_plan_{}", Utc::now().timestamp());
+    let filename = format!("reading_plans/reading_plan_{}", Utc::now().timestamp());
 
     let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
 
@@ -59,9 +59,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Write final plan to file
     match write_to_file(&filename, final_vec) {
-        Ok(_) => println!("Successfully wrote to file {}", &filename),
+        Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
-            eprintln!("Failed to write to file: {}", e);
+            eprintln!("\nFailed to write to file: {}", e);
             std::process::exit(1);
         }
     }
@@ -99,7 +99,7 @@ fn get_books_in_days(bible_data: Vec<Data>, duration: i32) -> Vec<ChaptersDays> 
 
     let total_chapter_count: i32 = bible_data.iter().map(|b| b.chapters).sum();
     if duration > total_chapter_count {
-        println!("\nWarning! the number of days exceeds the number of chapters: {} > {}\n",
+        println!("\nWARNING! The number of days exceeds the number of chapters: {} > {}\n",
             duration, total_chapter_count
         );
     }
@@ -345,17 +345,41 @@ fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Resul
     file_path.push(filename);
     let mut file = File::create(file_path)?;
 
+    let mut old_title = String::new();
+    let mut last_chapter: i32 = 0;
+    let mut catch_up_num: u16 = 1;
+
     writeln!(file, "Date         Read through")?;
     for t in final_vec {
         let titles = t.titles.join(", ");
         let chapters = if t.titles.len() > 1 {
             "all".to_string()
         } else if titles == "Catch-up day" {
-            "".to_string()
+            format!("{}", catch_up_num)
         } else {
-            t.chapters.to_string()
+            if titles == old_title {
+                if last_chapter == t.chapters || last_chapter == t.chapters - 1 {
+                    format!("{}", t.chapters)
+                } else {
+                    format!("{}-{}", last_chapter + 1, t.chapters)
+                }
+            } else {
+                if t.chapters == 1 {
+                    format!("{}", t.chapters)
+                } else {
+                    format!("1-{}", t.chapters)
+                }
+            }
         };
         writeln!(file, "{} {} {}", t.date.format("%b %e, %Y"), titles, chapters)?;
+        // writeln!(stdout(), "{} {} {}", t.date.format("%b %e, %Y"), titles, chapters)?;
+
+        old_title = titles.clone();
+        last_chapter = t.chapters;
+
+        if titles == "Catch-up day" {
+            catch_up_num += 1;
+        }
     }
     Ok(())
 }
