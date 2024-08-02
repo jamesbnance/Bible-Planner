@@ -40,7 +40,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
-    // let filename = format!("/home/jim/Documents/reading/plan_{}", Utc::now().timestamp());
     let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
     let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
@@ -372,7 +371,7 @@ fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Resul
             }
         };
         writeln!(file, "{} {} {}", t.date.format("%b %e, %Y"), titles, chapters)?;
-        // writeln!(stdout(), "{} {} {}", t.date.format("%b %e, %Y"), titles, chapters)?;
+        // println!("{} {} {}", t.date.format("%b %e, %Y"), titles, chapters);
 
         old_title = titles.clone();
         last_chapter = t.chapters;
