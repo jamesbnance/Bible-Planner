@@ -8,11 +8,18 @@ use csv::ReaderBuilder;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
-struct Data {
-    pub index: i32,
+struct ChapterData {
     pub title: String,
     pub chapters: i32,
-    pub words: i32
+    pub length: i32
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct IndexData {
+    pub index: i32,
+    pub title: String,
+    pub chapter: i32,
+    pub length: i32
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -35,29 +42,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     let book_index: Vec<i32> = (1..=66).collect();
 
     // Set the dates for reading and get the reading duration in days
-    let start_date = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+    let start_date = NaiveDate::from_ymd_opt(2025, 1, 31).unwrap();
     let end_date = NaiveDate::from_ymd_opt(2025, 12, 31).unwrap();
+
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
     let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
-    let bible_data: Vec<Data> = get_data("bible.csv", book_index)?;
-
-    let total_word_count: i32 = bible_data.iter().map(|b| b.words).sum();
-    let avg_daily_word_count = total_word_count / duration;
+    let bible_data: Vec<ChapterData> = get_data_combined("bible.csv", book_index.clone(), true)?;
+    let chapter_data: Vec<ChapterData> = get_data_combined("bible.csv", book_index.clone(), false)?;
 
     // Determine a vector of the books to read and the number of days for each
-    let titles_chapters_days: Vec<ChaptersDays> = get_books_in_days(bible_data, duration);
+    let titles_chapters_days: Vec<ChaptersDays> = get_books_in_days(bible_data.clone(), duration);
 
     // Assign books and chapters to dates
-    let titles_chapters_date: Vec<ChaptersDate> = get_chapters_dates(titles_chapters_days, start_date, end_date);
+    let titles_chapters_date: Vec<ChaptersDate> = get_chapters_dates_by_length(chapter_data, titles_chapters_days, start_date, end_date);
 
-    // Adjust dates for Psalm 119 and to fill in catch-up days
-    let final_vec: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, end_date, avg_daily_word_count);
+    // Adjust dates and fill in catch-up days
+    let adjusted_plan: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, bible_data, end_date);
 
     // Write final plan to file
-    match write_to_file(&filename, final_vec) {
+    match write_to_file(&filename, adjusted_plan) {
         Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
             eprintln!("\nFailed to write to file: {}", e);
@@ -67,30 +73,53 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// Create a vector with title, number of chapters, avg words per chapter
-fn get_data(file_path: &str, book_index: Vec<i32>) -> Result<Vec<Data>, Box<dyn Error>> {
-    let bible_file = File::open(file_path).expect(format!("Unable to open file {}", file_path).as_str());
-    let mut reader = ReaderBuilder::new().from_reader(bible_file);
-    let mut data = Vec::new();
-    for result in reader.deserialize() {
-        let record: Data = result?;
-        if !book_index.contains(&record.index) {
-            continue;
-        }
-        data.push(record);
-    }
-    Ok(data)
-}
-
 // Find duration in days
 fn get_duration(start: NaiveDate, end: NaiveDate) -> i32 {
-    let duration_in_hms = end.and_hms_opt(0, 0, 0).unwrap() 
-        - start.and_hms_opt(0, 0, 0).unwrap();
+    let duration_in_hms = end.and_hms_opt(0, 0, 0).unwrap() - start.and_hms_opt(0, 0, 0).unwrap();
     duration_in_hms.num_days() as i32
 }
 
+// Create a vector with title, number of chapters, total length
+fn get_data_combined(file_path: &str, book_index: Vec<i32>, accumulate: bool) -> Result<Vec<ChapterData>, Box<dyn Error>> {
+    let bible_file = File::open(file_path)?;
+    let mut reader = ReaderBuilder::new().from_reader(bible_file);
+    let mut data_vec: Vec<ChapterData> = Vec::new();
+
+    for result in reader.deserialize() {
+        let record: IndexData = result?;
+        if book_index.contains(&record.index) {
+            if accumulate {
+                let mut found = false;
+                for data in &mut data_vec {
+                    if data.title == record.title {
+                        data.chapters += 1;
+                        data.length += record.length;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    data_vec.push(ChapterData {
+                        title: record.title.clone(),
+                        chapters: 1,
+                        length: record.length,
+                    });
+                }
+            } else {
+                data_vec.push(ChapterData {
+                    title: record.title,
+                    chapters: record.chapter,
+                    length: record.length,
+                });
+            }
+        }
+    }
+
+    Ok(data_vec)
+}
+
 // Determine a vector of the books to read and the number of days for each
-fn get_books_in_days(bible_data: Vec<Data>, duration: i32) -> Vec<ChaptersDays> {
+fn get_books_in_days(bible_data: Vec<ChapterData>, duration: i32) -> Vec<ChaptersDays> {
     let mut result = Vec::new();
     let mut temp_titles: Vec<String> = Vec::new();
     let mut temp_chapters: i32 = 0;
@@ -98,14 +127,15 @@ fn get_books_in_days(bible_data: Vec<Data>, duration: i32) -> Vec<ChaptersDays> 
 
     let total_chapter_count: i32 = bible_data.iter().map(|b| b.chapters).sum();
     if duration > total_chapter_count {
-        println!("\nWARNING! The number of days exceeds the number of chapters: {} > {}\n",
+        panic!("ERROR! The number of days may not exceed the number of chapters: {} > {}\n",
             duration, total_chapter_count
         );
+
     }
-    let total_word_count: i32 = bible_data.iter().map(|b| b.words).sum();
+    let total_word_count: i32 = bible_data.iter().map(|b| b.length).sum();
 
     for book in bible_data {
-        let days: f32 = (book.words as f32 / total_word_count as f32) * duration as f32;
+        let days: f32 = (book.length as f32 / total_word_count as f32) * duration as f32;
         // combine books for partial days
         if days >= 0.66 {
             if !temp_titles.is_empty() {
@@ -152,48 +182,78 @@ fn round_days(days: f32, duration: i32) -> i32 {
     rdays
 }
 
-// Assign books and chapters to dates
-fn get_chapters_dates(tcds: Vec<ChaptersDays>, start: NaiveDate, end: NaiveDate) -> Vec<ChaptersDate> {
-    let mut title_chapters_dates = Vec::new();
-    let mut current_date = start;
+// Assign books and chapters to dates, taking into account chapter lengths
+fn get_chapters_dates_by_length(chapter_data: Vec<ChapterData>, tcds: Vec<ChaptersDays>, start: NaiveDate, end: NaiveDate) -> Vec<ChaptersDate> {
+    let mut title_chapters_dates: Vec<ChaptersDate> = Vec::new();
+    let mut current_date: NaiveDate = start;
+    for books in tcds {
+        if books.days == 1 {
+            title_chapters_dates.push(ChaptersDate {
+                titles: books.titles,
+                chapters: books.chapters,
+                date: current_date
+            });
+            current_date = current_date.succ_opt().unwrap();
+            assert!(current_date <= end, "Reading dates go past last designated date!");
+            continue;
+        }
+        assert!(books.titles.len() == 1, "Multiple books for more than 1 day");
+        let title = books.titles.first();
+        let n: f64 = books.days as f64;
+        let chapters = chapter_data.clone().into_iter().filter(| t | Some(&t.title) == title);
+        let total_words: f64 = chapters.clone().map(|chapter| chapter.length as f64).sum();
+        let average_words_per_day: f64 = total_words / n;
 
-    for tcd in tcds {
-        let chapters_per_day = tcd.chapters / tcd.days;
-        let mut extra_chapters = tcd.chapters % tcd.days;
-        let mut num_chapters: i32;
-        let mut book_chapter = 0;
-    
-        for _day in 0..tcd.days {
-            // Add one extra chapter each day until extra_chapters is zero
-            if extra_chapters > 0 {
-                num_chapters = chapters_per_day + 1;
-                extra_chapters -= 1;
-            } else {
-                num_chapters = chapters_per_day;
+        let mut low = 0.0;
+        let mut high = 1.0;
+        let mut tuner = 0.0;
+        loop {
+            let mut datasets: Vec<Vec<i32>> = Vec::new();
+            let mut current_group_total_words: f64 = 0.0;
+            let mut chapter_numbers: Vec<i32> = Vec::new();
+
+            for chapter in chapters.clone() {
+                current_group_total_words += chapter.length as f64;
+                chapter_numbers.push(chapter.chapters);
+
+                if (average_words_per_day - current_group_total_words) / average_words_per_day > tuner {
+                    continue;
+                } else {
+                    datasets.push(chapter_numbers.clone());
+                    current_group_total_words = 0.0;
+                    chapter_numbers.clear();
+                }
             }
 
-            book_chapter += num_chapters;
-            
-            let entry = ChaptersDate {
-                titles: tcd.titles.clone(),
-                chapters: book_chapter,
-                date: current_date,
-            };
-            
-            title_chapters_dates.push(entry);
-            current_date = current_date.succ_opt().unwrap();
+            // If any remaining chapters are not added, add them to the last dataset
+            if !chapter_numbers.is_empty() {
+                datasets.push(chapter_numbers.clone());
+            }
 
-            if current_date > end {
+            if (datasets.len() as f64) == n {
+                for dataset in datasets.into_iter() {
+                    title_chapters_dates.push(ChaptersDate {
+                        titles: books.titles.clone(),
+                        chapters: *dataset.last().unwrap(),
+                        date: current_date,
+                    });
+                    current_date = current_date.succ_opt().unwrap();
+                    assert!(current_date <= end, "Reading dates go past last designated date!");
+                }
                 break;
-            }            
+            } else if (datasets.len() as f64) < n {
+                low = tuner;
+            } else {
+                high = tuner;
+            }
+            tuner = (low + high) / 2.0;
         }
     }
     title_chapters_dates
 }
 
-// Adjust dates for Psalm 119, fill in catch-up days, split up combined readings if reasonable
-fn adjust_dates(tcds: Vec<ChaptersDate>, end: NaiveDate, avg_daily_word_count: i32) -> Vec<ChaptersDate> {
-
+// Adjust dates, fill in catch-up days, split up combined readings if reasonable
+fn adjust_dates(tcds: Vec<ChaptersDate>, bible_data: Vec<ChapterData>, end: NaiveDate) -> Vec<ChaptersDate> {
     let mut new_tcds: Vec<ChaptersDate> = tcds.clone();
 
     // find initial number of leftover days
@@ -202,20 +262,6 @@ fn adjust_dates(tcds: Vec<ChaptersDate>, end: NaiveDate, avg_daily_word_count: i
     } else { end };
     let diff = end - last_date;
     let mut num_days = diff.num_days();
-
-    // Adjust for Psalm 119, which has approx 2500 words
-    if num_days > 0 && avg_daily_word_count < 2500 {
-        for i in 0..new_tcds.len() - 1 {
-            let current_chapters = new_tcds[i].chapters;
-            let next_chapters = new_tcds[i + 1].chapters;
-    
-            if new_tcds[i].titles.contains(&"Psalms".to_string())
-                && current_chapters < 119 && next_chapters >= 119 {
-                insert_new_element(&mut new_tcds, i, "Psalms".to_string(), 119);
-            }
-        }
-        num_days -= 1;
-    }
 
     // Add a catch-up day between the OT and NT if applicable
     if num_days > 0 {
@@ -262,7 +308,6 @@ fn adjust_dates(tcds: Vec<ChaptersDate>, end: NaiveDate, avg_daily_word_count: i
                 let titles = max_chapters_element.titles.clone();
                 let num_titles = titles.len() as i32;
                 let date = max_chapters_element.date;
-                let base_chapters = max_chapters_element.chapters / num_titles;
 
                 // Remove the original element
                 new_tcds.remove(index);
@@ -272,7 +317,7 @@ fn adjust_dates(tcds: Vec<ChaptersDate>, end: NaiveDate, avg_daily_word_count: i
                     let new_date = date + Duration::days(i as i64);
                     let new_element = ChaptersDate {
                         titles: vec![title.clone()],
-                        chapters: base_chapters,
+                        chapters: bible_data.iter().find(|data| data.title == *title).unwrap().chapters,
                         date: new_date,
                     };
                     new_tcds.insert(index + i, new_element);
@@ -339,7 +384,7 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDate>, i: usize, title: String,
     }
 }
 
-fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Result<()> {
+fn write_to_file(filename: &str, adjusted_plan: Vec<ChaptersDate>) -> std::io::Result<()> {
     let mut file_path = PathBuf::from(env::current_dir()?);
     file_path.push(filename);
     let mut file = File::create(file_path)?;
@@ -348,8 +393,7 @@ fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Resul
     let mut last_chapter: i32 = 0;
     let mut catch_up_num: u16 = 1;
 
-    writeln!(file, "Date         Read through")?;
-    for t in final_vec {
+    for t in adjusted_plan {
         let titles = t.titles.join(", ");
         let chapters = if t.titles.len() > 1 {
             "all".to_string()
