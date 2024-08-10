@@ -60,10 +60,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let titles_chapters_date: Vec<ChaptersDate> = get_chapters_dates_by_length(chapter_data, titles_chapters_days, start_date, end_date);
 
     // Adjust dates and fill in catch-up days
-    let final_vec: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, bible_data, end_date);
+    let adjusted_plan: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, bible_data, end_date);
 
     // Write final plan to file
-    match write_to_file(&filename, final_vec) {
+    match write_to_file(&filename, adjusted_plan) {
         Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
             eprintln!("\nFailed to write to file: {}", e);
@@ -127,9 +127,10 @@ fn get_books_in_days(bible_data: Vec<ChapterData>, duration: i32) -> Vec<Chapter
 
     let total_chapter_count: i32 = bible_data.iter().map(|b| b.chapters).sum();
     if duration > total_chapter_count {
-        println!("\nWARNING! The number of days exceeds the number of chapters: {} > {}\n",
+        panic!("ERROR! The number of days may not exceed the number of chapters: {} > {}\n",
             duration, total_chapter_count
         );
+
     }
     let total_word_count: i32 = bible_data.iter().map(|b| b.length).sum();
 
@@ -383,7 +384,7 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDate>, i: usize, title: String,
     }
 }
 
-fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Result<()> {
+fn write_to_file(filename: &str, adjusted_plan: Vec<ChaptersDate>) -> std::io::Result<()> {
     let mut file_path = PathBuf::from(env::current_dir()?);
     file_path.push(filename);
     let mut file = File::create(file_path)?;
@@ -392,7 +393,7 @@ fn write_to_file(filename: &str, final_vec: Vec<ChaptersDate>) -> std::io::Resul
     let mut last_chapter: i32 = 0;
     let mut catch_up_num: u16 = 1;
 
-    for t in final_vec {
+    for t in adjusted_plan {
         let titles = t.titles.join(", ");
         let chapters = if t.titles.len() > 1 {
             "all".to_string()
