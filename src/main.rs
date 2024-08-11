@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::error::Error;
+use std::collections::HashMap;
 use chrono::{ Duration, NaiveDate, Utc };
 use csv::ReaderBuilder;
 use serde::Deserialize;
@@ -39,31 +40,48 @@ struct ChaptersDate {
 fn main() -> Result<(), Box<dyn Error>> {
 
     // Entire Bible 1..=66, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
-    let book_index: Vec<i32> = (1..=66).collect();
+    let book_indexes: Vec<Vec<i32>> = vec![
+        (40..=66).collect(),
+        (19..=20).collect(),
+        // TODO: Allow more than one pass-through of a book using e.g. (19..=20).chain(19..=20).collect()
+    ];
 
     // Set the dates for reading and get the reading duration in days
-    let start_date = NaiveDate::from_ymd_opt(2025, 1, 31).unwrap();
-    let end_date = NaiveDate::from_ymd_opt(2025, 12, 31).unwrap();
+    let start_date = NaiveDate::from_ymd_opt(2025, 6, 21).unwrap();
+    let end_date = NaiveDate::from_ymd_opt(2025, 9, 21).unwrap();
 
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
     let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
-    let bible_data: Vec<ChapterData> = get_data_combined("bible.csv", book_index.clone(), true)?;
-    let chapter_data: Vec<ChapterData> = get_data_combined("bible.csv", book_index.clone(), false)?;
+    let mut combined_plans: Vec<Vec<ChaptersDate>> = Vec::new();
 
-    // Determine a vector of the books to read and the number of days for each
-    let titles_chapters_days: Vec<ChaptersDays> = get_books_in_days(bible_data.clone(), duration);
+    for book_index in book_indexes {
+        // Get Bible and chapter data for the selected indexes
+        let bible_data: Vec<ChapterData> = get_data_combined("bible.csv", book_index.clone(), true)?;
+        let chapter_data: Vec<ChapterData> = get_data_combined("bible.csv", book_index.clone(), false)?;
 
-    // Assign books and chapters to dates
-    let titles_chapters_date: Vec<ChaptersDate> = get_chapters_dates_by_length(chapter_data, titles_chapters_days, start_date, end_date);
+        // Determine a vector of the books to read and the number of days for each
+        let titles_chapters_days: Vec<ChaptersDays> = get_books_in_days(bible_data.clone(), duration);
 
-    // Adjust dates and fill in catch-up days
-    let adjusted_plan: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, bible_data, end_date);
+        // Assign books and chapters to dates
+        let titles_chapters_date: Vec<ChaptersDate> = get_chapters_dates_by_length(chapter_data, titles_chapters_days, start_date, end_date);
+
+        // Adjust dates and fill in catch-up days
+        let adjusted_plan: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, bible_data, end_date);
+
+        // Combine this adjusted plan into the combined_plans
+        for (i, chapter_date) in adjusted_plan.into_iter().enumerate() {
+            if combined_plans.len() <= i {
+                combined_plans.push(vec![]);
+            }
+            combined_plans[i].push(chapter_date);
+        }
+    }
 
     // Write final plan to file
-    match write_to_file(&filename, adjusted_plan) {
+    match write_to_file(&filename, combined_plans) {
         Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
             eprintln!("\nFailed to write to file: {}", e);
@@ -384,45 +402,48 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDate>, i: usize, title: String,
     }
 }
 
-fn write_to_file(filename: &str, adjusted_plan: Vec<ChaptersDate>) -> std::io::Result<()> {
+// Write the output file: filling in start days; writing 'Catch-up day' only if all readings for
+// that date are catch-up days, otherwise printing only the readings that are book and chapters
+fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>) -> std::io::Result<()> {
     let mut file_path = PathBuf::from(env::current_dir()?);
     file_path.push(filename);
     let mut file = File::create(file_path)?;
 
-    let mut old_title = String::new();
-    let mut last_chapter: i32 = 0;
-    let mut catch_up_num: u16 = 1;
+    let mut last_chapters: HashMap<String, i32> = HashMap::new();
 
-    for t in adjusted_plan {
-        let titles = t.titles.join(", ");
-        let chapters = if t.titles.len() > 1 {
-            "all".to_string()
-        } else if titles == "Catch-up day" {
-            format!("{}", catch_up_num)
-        } else {
-            if titles == old_title {
-                if last_chapter == t.chapters || last_chapter == t.chapters - 1 {
-                    format!("{}", t.chapters)
-                } else {
-                    format!("{}-{}", last_chapter + 1, t.chapters)
-                }
+    for date_plans in combined_plans {
+        let date = date_plans[0].date;
+        let mut output = String::new();
+        let mut is_catch_up_day = true;
+
+        for plan in &date_plans {
+            let titles = plan.titles.join(", ");
+            if titles == "Catch-up day" {
+                continue;
             } else {
-                if t.chapters == 1 {
-                    format!("{}", t.chapters)
+                is_catch_up_day = false;
+
+                let last_chapter = last_chapters.entry(titles.clone()).or_insert(0);
+                let start_chapter = if *last_chapter == 0 { 1 } else { *last_chapter + 1 };
+                let chapters = if start_chapter == plan.chapters {
+                    format!("{}", plan.chapters)
                 } else {
-                    format!("1-{}", t.chapters)
-                }
+                    format!("{}-{}", start_chapter, plan.chapters)
+                };
+
+                output.push_str(&format!("{} {}, ", titles, chapters));
+                *last_chapter = plan.chapters;
             }
-        };
-        writeln!(file, "{} {} {}", t.date.format("%b %e, %Y"), titles, chapters)?;
-        // println!("{} {} {}", t.date.format("%b %e, %Y"), titles, chapters);
+        }
 
-        old_title = titles.clone();
-        last_chapter = t.chapters;
-
-        if titles == "Catch-up day" {
-            catch_up_num += 1;
+        if is_catch_up_day {
+            writeln!(file, "{} Catch-up day", date.format("%b %e, %Y"))?;
+        } else {
+            output.pop(); // Remove the trailing comma and space
+            output.pop();
+            writeln!(file, "{} {}", date.format("%b %e, %Y"), output)?;
         }
     }
+
     Ok(())
 }
