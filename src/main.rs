@@ -37,6 +37,12 @@ struct ChaptersDate {
     pub date: NaiveDate
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct DailyLength {
+    pub date: NaiveDate,
+    pub length: i32
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
 
     // Entire Bible 1..=66, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
@@ -56,6 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
     let mut combined_plans: Vec<Vec<ChaptersDate>> = Vec::new();
+    let mut combined_lengths_map: HashMap<NaiveDate, i32> = HashMap::new();
 
     for book_index in book_indexes {
         // Get Bible and chapter data for the selected indexes
@@ -66,22 +73,41 @@ fn main() -> Result<(), Box<dyn Error>> {
         let titles_chapters_days: Vec<ChaptersDays> = get_books_in_days(bible_data.clone(), duration);
 
         // Assign books and chapters to dates
-        let titles_chapters_date: Vec<ChaptersDate> = get_chapters_dates_by_length(chapter_data, titles_chapters_days, start_date, end_date);
+        let titles_chapters_date: Vec<ChaptersDate> = get_chapters_dates_by_length(chapter_data.clone(), titles_chapters_days, start_date, end_date);
 
         // Adjust dates and fill in catch-up days
         let adjusted_plan: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, bible_data, end_date);
 
         // Combine this adjusted plan into the combined_plans
-        for (i, chapter_date) in adjusted_plan.into_iter().enumerate() {
+        for (i, chapter_date) in adjusted_plan.clone().into_iter().enumerate() {
             if combined_plans.len() <= i {
                 combined_plans.push(vec![]);
             }
             combined_plans[i].push(chapter_date);
         }
+
+        // Find the daily reading lengths
+        let reading_lengths: Vec<DailyLength> = get_daily_reading_lengths(adjusted_plan, chapter_data);
+
+        // Combine the reading lengths
+        for daily in reading_lengths.clone().into_iter() {
+            combined_lengths_map
+                .entry(daily.date)
+                .and_modify(|e| *e += daily.length)
+                .or_insert(daily.length);
+        }
     }
 
+    // Convert the HashMap to a Vec<DailyLength> and sort by date
+    let mut combined_lengths: Vec<DailyLength> = combined_lengths_map
+        .into_iter()
+        .map(|(date, length)| DailyLength { date, length })
+        .collect();
+
+    combined_lengths.sort_by_key(|k| k.date);
+
     // Write final plan to file
-    match write_to_file(&filename, combined_plans) {
+    match write_to_file(&filename, combined_plans, combined_lengths, false) {
         Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
             eprintln!("\nFailed to write to file: {}", e);
@@ -448,9 +474,46 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDate>, i: usize, title: String,
     }
 }
 
+fn get_daily_reading_lengths(adjusted_plan: Vec<ChaptersDate>, chapter_data: Vec<ChapterData>) -> Vec<DailyLength> {
+    let mut result: Vec<DailyLength> = Vec::new();
+    let mut chapter_map: HashMap<(String, i32), i32> = HashMap::new();
+
+    // Create a lookup map for quick access to chapter lengths
+    for data in chapter_data {
+        chapter_map.insert((data.title.clone(), data.chapters), data.length);
+    }
+
+    let mut prev_end_chapter = 0;
+    let mut prev_title: String = String::new();
+
+    for day in adjusted_plan {
+        let mut total_length = 0;
+
+        for title in day.titles.clone() {
+            let start_chapter = if prev_title != title { 1 } else { prev_end_chapter + 1 };
+            let end_chapter = day.chapters;
+
+            // Collect lengths
+            for chapter in start_chapter..=end_chapter {
+                if let Some(&length) = chapter_map.get(&(title.to_string(), chapter)) {
+                    total_length += length;
+                }
+            }
+
+            prev_end_chapter = end_chapter;
+            prev_title = title.clone();
+        }
+
+        result.push(DailyLength{ date: day.date, length: total_length});
+    }
+
+    result
+}
+
 // Write the output file: filling in start days, and writing 'Catch-up day' only if all readings
 // for that date are catch-up days; otherwise include only the readings that are book and chapters
-fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>) -> std::io::Result<()> {
+fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>,
+    combined_lengths: Vec<DailyLength>, length_flag: bool) -> std::io::Result<()> {
     let mut file_path = PathBuf::from(env::current_dir()?);
     file_path.push(filename);
     let mut file = File::create(file_path)?;
@@ -460,7 +523,7 @@ fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>) -> std:
 
     // Iterate through each date's plans, accumulating output for the date's readings and
     // determining if the date is a catch-up day, then write the output to the file
-    for date_plans in combined_plans {
+    for (date_plans, daily_length) in combined_plans.into_iter().zip(combined_lengths.into_iter()) {
         let date = date_plans[0].date;
         let mut output = String::new();
         let mut is_catch_up_day = true;
@@ -492,10 +555,22 @@ fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>) -> std:
         if is_catch_up_day {
             writeln!(file, "{} Catch-up day", date.format("%b %e, %Y"))?;
         } else {
-             // Otherwise, write the accumulated output for the current date to the file
+            // Otherwise, write the accumulated output for the current date to the file
             output.pop(); // Remove the trailing comma and space
             output.pop();
-            writeln!(file, "{} {}", date.format("%b %e, %Y"), output)?;
+
+            // If length_flag is true, include the length of the reading for the day
+            if length_flag {
+                writeln!(
+                    file,
+                    "{}  {} ({})",
+                    date.format("%b %e, %Y"),
+                    output,
+                    daily_length.length
+                )?;
+            } else {
+                writeln!(file, "{}  {}", date.format("%b %e, %Y"), output)?;
+            }
         }
     }
 
