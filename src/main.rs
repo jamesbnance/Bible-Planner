@@ -44,19 +44,17 @@ struct DailyLength {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-
+    // Select the indexes of the books to read, e.g.
     // Entire Bible 1..=66, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
     let book_indexes: Vec<Vec<i32>> = vec![
-        // Read the New Testament, and twice through Psalms and Proverbs
-        (40..=66).collect(),
-        (19..=20).chain(19..=20).collect(),
+        (1..=66).collect(),
     ];
 
-    // Set the dates for reading and get the reading duration in days
-    let start_date = NaiveDate::from_ymd_opt(2025, 6, 21).expect("Invalid date");
-    let end_date = NaiveDate::from_ymd_opt(2025, 9, 21).expect("Invalid date");
-
+    // Set the start and end dates for the reading
+    let start_date = NaiveDate::from_ymd_opt(2024, 1, 1).expect("Invalid date");
+    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).expect("Invalid date");
     assert!(end_date > start_date, "Invalid dates!");
+
     let duration: i32 = get_duration(start_date, end_date);
 
     let filename = format!("reading_plan_{}", Utc::now().timestamp());
@@ -79,11 +77,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         let adjusted_plan: Vec<ChaptersDate> = adjust_dates(titles_chapters_date, bible_data, end_date);
 
         // Combine this adjusted plan into the combined_plans
-        for (i, chapter_date) in adjusted_plan.clone().into_iter().enumerate() {
-            if combined_plans.len() <= i {
-                combined_plans.push(vec![]);
+        for (i, chapter_date) in adjusted_plan.iter().enumerate() {
+            if let Some(plan) = combined_plans.get_mut(i) {
+                plan.push(chapter_date.clone());
+            } else {
+                combined_plans.push(vec![chapter_date.clone()]);
             }
-            combined_plans[i].push(chapter_date);
         }
 
         // Find the daily reading lengths
@@ -106,8 +105,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     combined_lengths.sort_by_key(|k| k.date);
 
-    // Write final plan to file
-    match write_to_file(&filename, combined_plans, combined_lengths, false) {
+    // Write final plan to file. Make length_flag true to include the length of the reading for the day.
+    match write_to_file(&filename, combined_plans, combined_lengths, true) {
         Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
             eprintln!("\nFailed to write to file: {}", e);
@@ -553,7 +552,7 @@ fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>,
 
         // If the current date is marked as a catch-up day, write it to the file
         if is_catch_up_day {
-            writeln!(file, "{} Catch-up day", date.format("%b %e, %Y"))?;
+            writeln!(file, "{}  Catch-up day", date.format("%b %e, %Y"))?;
         } else {
             // Otherwise, write the accumulated output for the current date to the file
             output.pop(); // Remove the trailing comma and space
@@ -561,13 +560,7 @@ fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>,
 
             // If length_flag is true, include the length of the reading for the day
             if length_flag {
-                writeln!(
-                    file,
-                    "{}  {} ({})",
-                    date.format("%b %e, %Y"),
-                    output,
-                    daily_length.length
-                )?;
+                writeln!(file, "{}  {} ({})", date.format("%b %e, %Y"), output, daily_length.length)?;
             } else {
                 writeln!(file, "{}  {}", date.format("%b %e, %Y"), output)?;
             }
