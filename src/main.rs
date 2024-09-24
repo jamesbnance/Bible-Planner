@@ -44,19 +44,31 @@ struct DailyLength {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Select the indexes of the books to read, e.g.
-    // Entire Bible 1..=66, OT 1..=39, NT 40..=66, Psalms & Prov 19..=20
+    /*
+        Select the indexes of the books to read, e.g. Entire Bible 1..=66,
+        OT 1..=39, NT 40..=66, Psalms & Prov 19..=20, etc.
+        Multiple indexes can be included. For example, to read through the
+        New Testament once and Psalms & Proverbs twice, use the following:
+        vec![
+            (40..=66).collect(),
+            (19..=20).chain(19..=20).collect()
+        ]
+    */
     let book_indexes: Vec<Vec<i32>> = vec![
-        (1..=66).collect(),
+        (40..=66).collect(),
+        (19..=20).chain(19..=20).collect()
     ];
 
-    // Set the start and end dates for the reading
-    let start_date = NaiveDate::from_ymd_opt(2024, 1, 1).expect("Invalid date");
-    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).expect("Invalid date");
-    assert!(end_date > start_date, "Invalid dates!");
+    // Set length_flag to `true`` to include daily reading lengths in the printout.
+    let length_flag: bool = false;
 
+    // Set the start and end dates for the reading
+    let start_date = NaiveDate::from_ymd_opt(2025, 6, 21).expect("Invalid date");
+    let end_date = NaiveDate::from_ymd_opt(2025, 9, 21).expect("Invalid date");
+    assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
+    // Rename the file if desired
     let filename = format!("reading_plan_{}", Utc::now().timestamp());
 
     let mut combined_plans: Vec<Vec<ChaptersDate>> = Vec::new();
@@ -105,8 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     combined_lengths.sort_by_key(|k| k.date);
 
-    // Write final plan to file. Make length_flag true to include the length of the reading for the day.
-    match write_to_file(&filename, combined_plans, combined_lengths, true) {
+    match write_to_file(&filename, combined_plans, combined_lengths, length_flag) {
         Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
             eprintln!("\nFailed to write to file: {}", e);
@@ -127,7 +138,7 @@ fn get_data_combined(file_path: &str, book_index: Vec<i32>, accumulate: bool) ->
     let mut data: Vec<ChapterData> = Vec::new();
 
     for index in book_index {
-        // Re-open the CSV file and reinitialize the reader to start from the beginning
+        // Re-open the CSV and reinitialize the reader to start from the beginning
         let file = File::open(file_path)?;
         let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
 
@@ -138,7 +149,6 @@ fn get_data_combined(file_path: &str, book_index: Vec<i32>, accumulate: bool) ->
         for result in rdr.deserialize() {
             let record: IndexData = result?;
 
-            // Check if the current book's index matches the current book_index
             if record.index == index {
                 if accumulate {
                     // Aggregated data (equivalent to get_bible_data)
