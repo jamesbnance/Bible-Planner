@@ -55,15 +55,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         ]
     */
     let book_indexes: Vec<Vec<i32>> = vec![
-        (1..=66).collect(),
+        (40..=66).collect(),
+        (19..=20).chain(19..=20).collect()
     ];
 
-    // Set length_flag to `true`` to include daily reading lengths in the printout.
+    // Set length_flag to `true` to include daily reading lengths in the printout.
     let length_flag: bool = false;
 
-    // Set the start and end dates for the reading
-    let start_date = NaiveDate::from_ymd_opt(2025, 1, 1).expect("Invalid date");
-    let end_date = NaiveDate::from_ymd_opt(2025, 12, 31).expect("Invalid date");
+    // Select the start and end dates for the reading
+    let start_date = NaiveDate::from_ymd_opt(2025, 6, 21).expect("Invalid date");
+    let end_date = NaiveDate::from_ymd_opt(2025, 9, 21).expect("Invalid date");
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
