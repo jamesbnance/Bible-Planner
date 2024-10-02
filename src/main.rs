@@ -55,16 +55,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         ]
     */
     let book_indexes: Vec<Vec<i32>> = vec![
-        (40..=66).collect(),
-        (19..=20).chain(19..=20).collect()
+        (1..=66).collect(),
     ];
 
     // Set length_flag to `true`` to include daily reading lengths in the printout.
     let length_flag: bool = false;
 
     // Set the start and end dates for the reading
-    let start_date = NaiveDate::from_ymd_opt(2025, 6, 21).expect("Invalid date");
-    let end_date = NaiveDate::from_ymd_opt(2025, 9, 21).expect("Invalid date");
+    let start_date = NaiveDate::from_ymd_opt(2025, 1, 1).expect("Invalid date");
+    let end_date = NaiveDate::from_ymd_opt(2025, 12, 31).expect("Invalid date");
     assert!(end_date > start_date, "Invalid dates!");
     let duration: i32 = get_duration(start_date, end_date);
 
@@ -548,7 +547,9 @@ fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>,
                 let last_chapter = last_chapters.entry(titles.clone()).or_insert(0);
                 // Determine the starting chapter for the current plan
                 let mut start_chapter = if *last_chapter == 0 { 1 } else { *last_chapter + 1 };
-                let chapters = if start_chapter == plan.chapters {
+                let chapters = if plan.titles.len() > 1 {
+                    "all".to_string()
+                } else if start_chapter == plan.chapters {
                     format!("{}", plan.chapters)
                 } else {
                     start_chapter = if start_chapter > plan.chapters { 1 } else { start_chapter };
