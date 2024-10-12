@@ -62,11 +62,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Set length_flag to `true` to include daily reading lengths in the printout.
     let length_flag: bool = false;
 
-    // Select the start and end dates for the reading
+    // Option 1: Select the start and end dates for the reading
     let start_date = NaiveDate::from_ymd_opt(2025, 6, 21).expect("Invalid date");
-    let end_date = NaiveDate::from_ymd_opt(2025, 9, 21).expect("Invalid date");
+    let mut end_date = NaiveDate::from_ymd_opt(2025, 9, 21).expect("Invalid date");
     assert!(end_date > start_date, "Invalid dates!");
-    let duration: i32 = get_duration(start_date, end_date);
+    let mut duration: i32 = get_duration(start_date, end_date);
+
+    // Option 2: Set duration_flag to `true` and set duration value to use a total day count rather than specific dates.
+    let duration_flag: bool = false;
+    if duration_flag {
+        duration = 90; // Set the total number of days
+        end_date = start_date + Duration::days(duration as i64);
+        assert!(duration > 0, "Invalid duration!");
+    }
 
     // Rename the file if desired
     let filename = format!("reading_plan_{}", Utc::now().timestamp());
@@ -117,7 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     combined_lengths.sort_by_key(|k| k.date);
 
-    match write_to_file(&filename, combined_plans, combined_lengths, length_flag) {
+    match write_to_file(&filename, combined_plans, combined_lengths, length_flag, duration_flag, duration) {
         Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
         Err(e) => {
             eprintln!("\nFailed to write to file: {}", e);
@@ -519,16 +527,26 @@ fn get_daily_reading_lengths(adjusted_plan: Vec<ChaptersDate>, chapter_data: Vec
     result
 }
 
-// Write the output file: filling in start days, and writing 'Catch-up day' only if all readings
-// for that date are catch-up days; otherwise include only the readings that are book and chapters
-fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>,
-    combined_lengths: Vec<DailyLength>, length_flag: bool) -> std::io::Result<()> {
+// Write the output file, with reading date, book(s) and chapter(s) (or 'Catch-up day' if all readings for that
+// date are catch-up days). Option: length_flag: include daily reading lengths. Option: duration_flag: use day count
+// rather than dates.
+fn write_to_file(
+    filename: &str,
+    combined_plans: Vec<Vec<ChaptersDate>>,
+    combined_lengths: Vec<DailyLength>,
+    length_flag: bool,
+    duration_flag: bool,
+    duration: i32) -> std::io::Result<()>
+{
     let mut file_path = PathBuf::from(env::current_dir()?);
     file_path.push(filename);
     let mut file = File::create(file_path)?;
 
     // HashMap to keep track of the last chapter read for each book
     let mut last_chapters: HashMap<String, i32> = HashMap::new();
+
+    // If duration_flag is true, day_number will replace the date in the output
+    let mut day_number = 1;
 
     // Iterate through each date's plans, accumulating output for the date's readings and
     // determining if the date is a catch-up day, then write the output to the file
@@ -562,9 +580,26 @@ fn write_to_file(filename: &str, combined_plans: Vec<Vec<ChaptersDate>>,
             }
         }
 
+        if duration_flag && day_number > duration {
+            break;
+        }
+
         // If the current date is marked as a catch-up day, write it to the file
-        if is_catch_up_day {
+        if is_catch_up_day && !duration_flag {
             writeln!(file, "{}  Catch-up day", date.format("%b %e, %Y"))?;
+        } else  if duration_flag {
+             // Write the accumulated output for the day number to the file
+             output.pop(); // Remove the trailing comma and space
+             output.pop();
+
+             // If length_flag is true, include the length of the reading for the day
+             if length_flag {
+                 writeln!(file, "{}  {} ({})", day_number, output, daily_length.length)?;
+             } else {
+                 writeln!(file, "{}  {}", day_number, output)?;
+             }
+             day_number += 1;
+
         } else {
             // Otherwise, write the accumulated output for the current date to the file
             output.pop(); // Remove the trailing comma and space
