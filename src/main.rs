@@ -4,6 +4,7 @@ use std::fs::File;
 use std::error::Error;
 use std::collections::HashMap;
 use csv::ReaderBuilder;
+use eframe::egui;
 
 #[derive(Debug, Deserialize, Clone)]
 struct ChapterData {
@@ -33,103 +34,491 @@ struct DailyLength {
     pub day: i32
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-  /*
-      Select the indexes of the books to read, e.g. Entire Bible 1..=66,
-      OT 1..=39, NT 40..=66, Psalms & Prov 19..=20, etc.
-      Multiple indexes can be included. For example, to read through the
-      New Testament once and Psalms & Proverbs twice, use the following:
-      vec![
-          (40..=66).collect(),
-          (19..=20).chain(19..=20).collect()
-      ]
-  */
-  let book_indexes: Vec<Vec<i32>> = vec![
-      (1..=39).collect(),
-      (40..=66).chain(40..=66).collect()
-  ];
+// ── Book data ────────────────────────────────────────────────────────────────
 
-  let mut combined_plan: Vec<Vec<ChaptersDays>> = Vec::new();
-  let mut combined_lengths: Vec<DailyLength> = Vec::new();
+const BOOK_NAMES: [&str; 66] = [
+    "Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy",
+    "Joshua", "Judges", "Ruth", "1 Samuel", "2 Samuel",
+    "1 Kings", "2 Kings", "1 Chronicles", "2 Chronicles", "Ezra",
+    "Nehemiah", "Esther", "Job", "Psalms", "Proverbs",
+    "Ecclesiastes", "Song of Solomon", "Isaiah", "Jeremiah", "Lamentations",
+    "Ezekiel", "Daniel", "Hosea", "Joel", "Amos",
+    "Obadiah", "Jonah", "Micah", "Nahum", "Habakkuk",
+    "Zephaniah", "Haggai", "Zechariah", "Malachi",
+    "Matthew", "Mark", "Luke", "John", "Acts",
+    "Romans", "1 Corinthians", "2 Corinthians", "Galatians", "Ephesians",
+    "Philippians", "Colossians", "1 Thessalonians", "2 Thessalonians", "1 Timothy",
+    "2 Timothy", "Titus", "Philemon", "Hebrews", "James",
+    "1 Peter", "2 Peter", "1 John", "2 John", "3 John",
+    "Jude", "Revelation",
+];
 
-  // Set length_flag to `true` to include daily reading lengths in the printout.
-  let length_flag: bool = true;
+// Quick-select groups: (button label, first 0-based index, last 0-based index)
+const BOOK_GROUPS: &[(&str, usize, usize)] = &[
+    ("Entire Bible",   0,  65),
+    ("OT",             0,  38),
+    ("NT",            39,  65),
+    ("Pentateuch",     0,   4),
+    ("History",        5,  16),
+    ("Poetry",        17,  21),
+    ("Maj. Prophets", 22,  26),
+    ("Min. Prophets", 27,  38),
+    ("Gospels+Acts",  39,  43),
+    ("Epistles",      44,  64),
+    ("Revelation",    65,  65),
+];
 
-  // OPTION 1: Select a start date, end date, and any weekdays to skip (Sun, Mon, Tue, Wed, Thu, Fri, Sat)
-  let start_date = NaiveDate::from_ymd_opt(2027, 1, 1).expect("Invalid start date");
-  let end_date = NaiveDate::from_ymd_opt(2028, 12, 31).expect("Invalid end date");
-  let weekdays_to_skip = vec!["Fri", "Sun"]; // Days to skip (e.g. ["Sat", "Sun"])
-  
-  assert!(end_date > start_date, "Start date must be before end date");
-  assert!(weekdays_to_skip.len() < 7, "Invalid number of weekdays to skip");
-  assert!(weekdays_to_skip.iter().all(|&day| ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].contains(&day)), "Invalid weekday to skip");
-  let duration: i32;
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ReadingTrack {
+    selected: Vec<bool>,
+    read_times: u32,
+    show_books: bool,
+}
 
-  // OPTION 2: Use a total day count (duration) rather than selecting start and end dates. 
-  // Set duration_flag to `true` and set duration value.
-  let duration_flag: bool = false;
-
-  let mut day_dates: Vec<NaiveDate> = Vec::new();
-  if duration_flag {
-
-      duration = 365; // Set the total number of days for the reading plan
-
-      assert!(duration > 0, "Invalid duration!");
-  } else {
-      duration = get_duration(start_date, end_date, &weekdays_to_skip);
-      day_dates = get_day_dates(start_date, end_date, &weekdays_to_skip); // Assign dates to each day
-  }
-
-  // Rename the output file if desired
-  let filename = format!("reading_plan_{}", Utc::now().timestamp());
-
-  for book_index in book_indexes {
-    // Get Bible and chapter data for the selected indexes
-    let bible_data: Vec<ChapterData> = get_bible_chapter_data("bible.csv", book_index.clone(), true)?;
-    let chapter_data: Vec<ChapterData> = get_bible_chapter_data("bible.csv", book_index.clone(), false)?;
-
-    // Determine a vector of the books to read and the number of days for each
-    let titles_chapters_days: Vec<ChaptersDays> = get_books_in_days(bible_data.clone(), duration);
-    println!("duration: {}, titles_chapters_days length: {:?}", duration, titles_chapters_days.clone().into_iter().map(|tcd| tcd.days).sum::<i32>());
-
-    // Assign books and chapters to each day
-    let titles_chapters_daily: Vec<ChaptersDays> = get_chapters_days_by_length(chapter_data.clone(), titles_chapters_days.clone(), duration);
-
-    // Adjust the readings and fill in catch up days
-    let adjusted_plan: Vec<ChaptersDays> = adjust_days(titles_chapters_daily.clone(), bible_data, duration);
-
-    // Combine readings into a single combined plan
-    for (i, day) in adjusted_plan.iter().enumerate() {
-      if combined_plan.len() <= i {
-          combined_plan.push(Vec::new());
-      }
-      combined_plan[i].push(day.clone());
+impl ReadingTrack {
+    fn empty() -> Self {
+        Self { selected: vec![false; 66], read_times: 1, show_books: false }
     }
 
-    // Find the daily reading lengths
-    let reading_lengths: Vec<DailyLength> = get_daily_reading_lengths(adjusted_plan, chapter_data);
-    for daily in reading_lengths {
-      if let Some(existing) = combined_lengths.iter_mut().find(|e| e.day == daily.day) {
-          existing.length += daily.length;
-      } else {
-          combined_lengths.push(daily);
-      }
+    fn select_range(&mut self, start: usize, end: usize) {
+        for i in start..=end { self.selected[i] = true; }
     }
-  }
 
-  // Sort the combined lengths by day
-  combined_lengths.sort_by_key(|k| k.day);
-
-  // Print the reading plan
-  match write_to_file(&filename, combined_plan, combined_lengths, length_flag, day_dates) {
-    Ok(_) => println!("\nSuccessfully wrote to file {}", &filename),
-    Err(e) => {
-        eprintln!("\nFailed to write to file: {}", e);
-        std::process::exit(1);
+    fn deselect_range(&mut self, start: usize, end: usize) {
+        for i in start..=end { self.selected[i] = false; }
     }
-  }
 
-  Ok(())
+    // Draw this track's UI. Returns true if the user clicked Remove.
+    fn show(&mut self, ui: &mut egui::Ui, idx: usize, removable: bool) -> bool {
+        let mut remove = false;
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("Track {}", idx + 1)).strong());
+            if removable && ui.small_button("✕ Remove").clicked() {
+                remove = true;
+            }
+        });
+
+        // Quick-select buttons — highlighted when every book in the group is selected
+        ui.horizontal_wrapped(|ui| {
+            for &(label, start, end) in BOOK_GROUPS {
+                let active = (start..=end).all(|i| self.selected[i]);
+                let fill = if active {
+                    ui.visuals().selection.bg_fill
+                } else {
+                    ui.visuals().widgets.inactive.weak_bg_fill
+                };
+                let text = egui::RichText::new(label)
+                    .color(if active { egui::Color32::WHITE } else { ui.visuals().text_color() });
+                if ui.add(egui::Button::new(text).fill(fill).small()).clicked() {
+                    if active { self.deselect_range(start, end); } else { self.select_range(start, end); }
+                }
+            }
+            if ui.small_button("Clear").clicked() {
+                self.selected = vec![false; 66];
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.read_times, 1, "Once");
+            ui.radio_value(&mut self.read_times, 2, "Twice");
+            let multi = self.read_times >= 3;
+            if ui.radio(multi, "Multiple times:").clicked() && !multi {
+                self.read_times = 3;
+            }
+            if multi {
+                ui.add(egui::DragValue::new(&mut self.read_times).range(3u32..=52));
+            }
+        });
+        ui.add_space(8.0);
+
+        // Toggle for the individual book list
+        let toggle_label = if self.show_books { "Hide individual books" } else { "Show individual books" };
+        if ui.small_button(toggle_label).clicked() {
+            self.show_books = !self.show_books;
+        }
+
+        if self.show_books {
+            ui.add_space(6.0);
+            // Book checklist — columns adapt to available width; outer ScrollArea handles overflow
+            let col_width = 170.0_f32;
+            let num_cols = ((ui.available_width() / col_width) as usize).max(1).min(6);
+            egui::Grid::new(format!("book_grid_{}", idx))
+                .num_columns(num_cols)
+                .min_col_width(col_width)
+                .show(ui, |ui| {
+                    for (i, &name) in BOOK_NAMES.iter().enumerate() {
+                        ui.checkbox(&mut self.selected[i], name);
+                        if (i + 1) % num_cols == 0 { ui.end_row(); }
+                    }
+                    if BOOK_NAMES.len() % num_cols != 0 { ui.end_row(); }
+                });
+        }
+
+        remove
+    }
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let (y, m) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    NaiveDate::from_ymd_opt(y, m, 1)
+        .and_then(|d| d.pred_opt())
+        .map_or(31, |d| d.day())
+}
+
+fn main() -> Result<(), eframe::Error> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([560.0, 800.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Bible Reading Planner",
+        options,
+        Box::new(|_cc| {
+            let app: BiblePlannerApp = std::fs::read_to_string("bible_planner_config.json")
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            Ok(Box::new(app))
+        }),
+    )
+}
+
+// ── GUI state ────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BiblePlannerApp {
+    tracks: Vec<ReadingTrack>,
+    use_date_range: bool,
+    start_year: i32,
+    start_month: u32,
+    start_day: u32,
+    end_year: i32,
+    end_month: u32,
+    end_day: u32,
+    skip_days: [bool; 7],
+    duration: i32,
+    include_length: bool,
+
+    // Session-only state — not persisted
+    #[serde(skip)]
+    last_output: Option<String>,
+    #[serde(skip)]
+    status: String,
+    #[serde(skip)]
+    status_is_error: bool,
+}
+
+impl Default for BiblePlannerApp {
+    fn default() -> Self {
+        let mut track = ReadingTrack::empty();
+        track.select_range(0, 65);
+
+        let mut skip_days = [false; 7];
+        skip_days[0] = true; // Sunday
+
+        Self {
+            tracks: vec![track],
+            use_date_range: true,
+            start_year: 2027,
+            start_month: 1,
+            start_day: 1,
+            end_year: 2027,
+            end_month: 12,
+            end_day: 31,
+            skip_days,
+            duration: 365,
+            include_length: true,
+            last_output: None,
+            status: String::new(),
+            status_is_error: false,
+        }
+    }
+}
+
+// ── Drawing the UI ───────────────────────────────────────────────────────────
+//
+// eframe calls `update` roughly 60× per second.  Every call rebuilds the
+// entire UI from scratch using the current values in `self`.  There are no
+// callbacks or event listeners — widgets return whether they were interacted
+// with right where they are drawn.
+
+impl eframe::App for BiblePlannerApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(20, 16))
+            .show(ui, |ui| { self.panel_contents(ui); });
+    }
+}
+
+impl BiblePlannerApp {
+    fn panel_contents(&mut self, ui: &mut egui::Ui) {
+        // More vertical breathing room between widgets
+        ui.spacing_mut().item_spacing.y = 6.0;
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Bible Reading Planner");
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // ── Books ──────────────────────────────────────────────────────
+            ui.label(egui::RichText::new("Books to Read").strong());
+            ui.add_space(4.0);
+
+            let mut to_remove: Option<usize> = None;
+            let removable = self.tracks.len() > 1;
+
+            for (idx, track) in self.tracks.iter_mut().enumerate() {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(12))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
+                    .corner_radius(4.0)
+                    .show(ui, |ui| {
+                        if track.show(ui, idx, removable) {
+                            to_remove = Some(idx);
+                        }
+                    });
+                ui.add_space(8.0);
+            }
+            if let Some(idx) = to_remove {
+                self.tracks.remove(idx);
+            }
+            if ui.button("+ Add Track").clicked() {
+                self.tracks.push(ReadingTrack::empty());
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // ── Schedule ───────────────────────────────────────────────────
+            ui.label(egui::RichText::new("Schedule").strong());
+            ui.add_space(2.0);
+
+            // radio_value(&mut field, value_when_selected, "label")
+            // The field is set to `value_when_selected` when this radio is clicked.
+            ui.radio_value(&mut self.use_date_range, true,  "Date range");
+            ui.radio_value(&mut self.use_date_range, false, "Fixed duration (days)");
+            ui.add_space(4.0);
+
+            if self.use_date_range {
+                const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun",
+                                            "Jul","Aug","Sep","Oct","Nov","Dec"];
+
+                // Clamp stored days to the real maximum for the selected month/year.
+                let start_max = days_in_month(self.start_year, self.start_month);
+                self.start_day = self.start_day.min(start_max);
+                let end_max = days_in_month(self.end_year, self.end_month);
+                self.end_day = self.end_day.min(end_max);
+
+                // `Grid` lines up labels and controls in neat columns.
+                egui::Grid::new("dates_grid").num_columns(4).show(ui, |ui| {
+                    ui.label("Start date:");
+                    ui.add(egui::DragValue::new(&mut self.start_year).range(2020..=2100));
+                    egui::ComboBox::from_id_salt("start_month")
+                        .selected_text(MONTHS[(self.start_month - 1) as usize])
+                        .show_ui(ui, |ui| {
+                            for (i, &name) in MONTHS.iter().enumerate() {
+                                ui.selectable_value(&mut self.start_month, (i + 1) as u32, name);
+                            }
+                        });
+                    ui.add(egui::DragValue::new(&mut self.start_day).range(1..=start_max).prefix("Day "));
+                    ui.end_row();
+
+                    ui.label("End date:");
+                    ui.add(egui::DragValue::new(&mut self.end_year).range(2020..=2100));
+                    egui::ComboBox::from_id_salt("end_month")
+                        .selected_text(MONTHS[(self.end_month - 1) as usize])
+                        .show_ui(ui, |ui| {
+                            for (i, &name) in MONTHS.iter().enumerate() {
+                                ui.selectable_value(&mut self.end_month, (i + 1) as u32, name);
+                            }
+                        });
+                    ui.add(egui::DragValue::new(&mut self.end_day).range(1..=end_max).prefix("Day "));
+                    ui.end_row();
+                });
+
+                ui.add_space(4.0);
+                // `horizontal` places widgets side-by-side on one line.
+                ui.horizontal(|ui| {
+                    ui.label("Skip weekdays:");
+                    let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                    for (i, name) in names.iter().enumerate() {
+                        ui.checkbox(&mut self.skip_days[i], *name);
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    ui.add(egui::DragValue::new(&mut self.duration).range(1..=3650).suffix(" days"));
+                });
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // ── Options ────────────────────────────────────────────────────
+            ui.label(egui::RichText::new("Options").strong());
+            ui.add_space(2.0);
+            ui.checkbox(&mut self.include_length, "Include daily word count in output");
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            // ── Generate button ────────────────────────────────────────────
+            // `button` returns a Response; `.clicked()` is true for exactly
+            // the one frame the user releases the mouse button.
+            if ui.button("  Generate Plan  ").clicked() {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.generate_plan();
+                }));
+                if result.is_err() {
+                    self.status = "Plan generation failed — the settings caused an internal error. Try a different date range or book selection.".to_string();
+                    self.status_is_error = true;
+                }
+            }
+
+            // Status line — green on success, red on error
+            if !self.status.is_empty() {
+                ui.add_space(8.0);
+                let color = if self.status_is_error {
+                    egui::Color32::RED
+                } else {
+                    egui::Color32::from_rgb(0, 160, 0)
+                };
+                ui.colored_label(color, &self.status);
+            }
+            if let Some(path) = &self.last_output.clone() {
+                if ui.button("Open output file").clicked() {
+                    open_file(path);
+                }
+            }
+        });
+    }
+}
+
+// ── Planning logic called from the GUI ───────────────────────────────────────
+
+impl BiblePlannerApp {
+    fn generate_plan(&mut self) {
+        // Build book index lists from the track selections
+        let mut book_indexes: Vec<Vec<i32>> = Vec::new();
+        for track in &self.tracks {
+            let indexes: Vec<i32> = (0..66)
+                .filter(|&i| track.selected[i])
+                .map(|i| (i + 1) as i32)
+                .collect();
+            if indexes.is_empty() { continue; }
+            let repeated: Vec<i32> = indexes.iter()
+                .cloned()
+                .cycle()
+                .take(indexes.len() * track.read_times as usize)
+                .collect();
+            book_indexes.push(repeated);
+        }
+        if book_indexes.is_empty() {
+            self.status = "Please select at least one book.".to_string();
+            self.status_is_error = true;
+            return;
+        }
+
+        // Build the skip list from the seven checkboxes
+        let names: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        let weekdays_to_skip: Vec<&str> = names
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| self.skip_days[i])
+            .map(|(_, &n)| n)
+            .collect();
+
+        // Resolve duration and (optionally) a date for each day number
+        let (duration, day_dates) = if self.use_date_range {
+            let start = match NaiveDate::from_ymd_opt(self.start_year, self.start_month, self.start_day) {
+                Some(d) => d,
+                None => { self.status = "Invalid start date.".to_string(); self.status_is_error = true; return; }
+            };
+            let end = match NaiveDate::from_ymd_opt(self.end_year, self.end_month, self.end_day) {
+                Some(d) => d,
+                None => { self.status = "Invalid end date.".to_string(); self.status_is_error = true; return; }
+            };
+            if end <= start {
+                self.status = "End date must be after start date.".to_string();
+                self.status_is_error = true;
+                return;
+            }
+            (get_duration(start, end, &weekdays_to_skip),
+             get_day_dates(start, end, &weekdays_to_skip))
+        } else {
+            (self.duration, Vec::new())
+        };
+
+        // Run the existing planning pipeline
+        let filename = format!("reading_plan_{}", Utc::now().timestamp());
+        let mut combined_plan: Vec<Vec<ChaptersDays>> = Vec::new();
+        let mut combined_lengths: Vec<DailyLength> = Vec::new();
+
+        for book_index in book_indexes {
+            let bible_data = match get_bible_chapter_data("bible.csv", book_index.clone(), true) {
+                Ok(d) => d,
+                Err(e) => { self.status = format!("Error reading bible.csv: {}", e); self.status_is_error = true; return; }
+            };
+            let chapter_data = match get_bible_chapter_data("bible.csv", book_index.clone(), false) {
+                Ok(d) => d,
+                Err(e) => { self.status = format!("Error reading bible.csv: {}", e); self.status_is_error = true; return; }
+            };
+
+            let tcd  = get_books_in_days(bible_data.clone(), duration);
+            let tcd2 = get_chapters_days_by_length(chapter_data.clone(), tcd, duration);
+            let plan = adjust_days(tcd2, bible_data, duration);
+
+            for (i, day) in plan.iter().enumerate() {
+                if combined_plan.len() <= i { combined_plan.push(Vec::new()); }
+                combined_plan[i].push(day.clone());
+            }
+
+            for daily in get_daily_reading_lengths(plan, chapter_data) {
+                if let Some(e) = combined_lengths.iter_mut().find(|e| e.day == daily.day) {
+                    e.length += daily.length;
+                } else {
+                    combined_lengths.push(daily);
+                }
+            }
+        }
+
+        combined_lengths.sort_by_key(|k| k.day);
+
+        let csv_path = format!("{}.csv", filename);
+        match write_to_file(&filename, combined_plan, combined_lengths, self.include_length, day_dates) {
+            Ok(_) => {
+                self.status = format!("Written to {}", csv_path);
+                self.last_output = Some(csv_path);
+                self.status_is_error = false;
+                // Persist settings after a successful generation
+                if let Ok(json) = serde_json::to_string_pretty(self) {
+                    let _ = std::fs::write("bible_planner_config.json", json);
+                }
+            }
+            Err(e) => {
+                self.status = format!("Error: {}", e);
+                self.status_is_error = true;
+            }
+        }
+    }
+}
+
+fn open_file(path: &str) {
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
 }
 
 fn get_duration(start: NaiveDate, end: NaiveDate, weekdays_to_skip: &[&str]) -> i32 {
@@ -271,7 +660,7 @@ fn push_new_element(result: &mut Vec<ChaptersDays>, titles: Vec<String>, chapter
 
 fn get_chapters_days_by_length(chapter_data: Vec<ChapterData>, titles_chapters_days: Vec<ChaptersDays>, duration: i32) -> Vec<ChaptersDays> {
   let mut title_chapters_days: Vec<ChaptersDays> = Vec::new();
-  let mut days_remaining = duration;
+  let mut _days_remaining = duration;
   let mut current_day = 1;
 
   // Iterate through each set of books and chapters grouped by days
@@ -296,10 +685,8 @@ fn get_chapters_days_by_length(chapter_data: Vec<ChapterData>, titles_chapters_d
           chapters: books.chapters,
           days: current_day,
       });
-      days_remaining -= 1;
+      _days_remaining -= 1;
       current_day += 1;
-      assert!(days_remaining >= 0, "ERROR! No remaining days to assign");
-      assert!(current_day <= duration, "ERROR! The current day exceeds the total duration: {}\n", current_day);
       continue;
     }
     assert!(books.titles.len() == 1, "ERROR! Multiple books assigned to a single day!");
@@ -360,8 +747,6 @@ fn get_chapters_days_by_length(chapter_data: Vec<ChapterData>, titles_chapters_d
                     days: current_day,
                 });
                 current_day += 1;
-                assert!(current_day <= duration,
-                  "ERROR! The current day {} exceeds the total duration {}.", current_day, duration);
             }
             break;
         } else if (datasets.len() as f64) < book_days {
@@ -635,7 +1020,7 @@ fn write_to_file(
       let date_or_day = if day_dates.is_empty() {
           (i + 1).to_string()
       } else {
-          day_dates[i].format("%a, %B %-d, %Y").to_string()
+          day_dates[i].format("%a, %b %-d, %Y").to_string()
       };
 
       let books_and_chapters = day
