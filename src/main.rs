@@ -94,7 +94,7 @@ impl ReadingTrack {
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("Track {}", idx + 1)).strong());
-            if removable && ui.small_button("✕ Remove").clicked() {
+            if removable && ui.small_button("Remove").clicked() {
                 remove = true;
             }
         });
@@ -104,17 +104,29 @@ impl ReadingTrack {
             for &(label, start, end) in BOOK_GROUPS {
                 let active = (start..=end).all(|i| self.selected[i]);
                 let fill = if active {
-                    ui.visuals().selection.bg_fill
+                    if ui.visuals().dark_mode {
+                        ui.visuals().selection.bg_fill
+                    } else {
+                        // Light theme's default selection color (pale blue) has
+                        // poor contrast with the white button text; use a
+                        // darker blue instead.
+                        egui::Color32::from_rgb(0, 92, 128)
+                    }
                 } else {
                     ui.visuals().widgets.inactive.weak_bg_fill
                 };
                 let text = egui::RichText::new(label)
                     .color(if active { egui::Color32::WHITE } else { ui.visuals().text_color() });
-                if ui.add(egui::Button::new(text).fill(fill).small()).clicked() {
+                if ui.add(egui::Button::new(text).fill(fill).small().wrap_mode(egui::TextWrapMode::Extend)).clicked() {
                     if active { self.deselect_range(start, end); } else { self.select_range(start, end); }
                 }
             }
-            if ui.small_button("Clear").clicked() {
+
+            // Styled as a plain gray outline so it reads as a distinct,
+            // less-frequent action than the filled quick-select pills.
+            let gray = egui::Color32::from_gray(130);
+            let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
+            if outline_button(ui, "Clear", gray, gray_hover).clicked() {
                 self.selected = vec![false; 66];
             }
         });
@@ -124,7 +136,7 @@ impl ReadingTrack {
             ui.radio_value(&mut self.read_times, 1, "Once");
             ui.radio_value(&mut self.read_times, 2, "Twice");
             let multi = self.read_times >= 3;
-            if ui.radio(multi, "Multiple times:").clicked() && !multi {
+            if ui.radio(multi, "Multiple times").clicked() && !multi {
                 self.read_times = 3;
             }
             if multi {
@@ -160,6 +172,90 @@ impl ReadingTrack {
     }
 }
 
+fn default_dark_mode() -> bool { true }
+fn default_ui_scale() -> f32 { 1.2 }
+fn default_reading_speed_wpm() -> u32 { 200 }
+fn default_output_dir() -> String { "reading_plan".to_string() }
+
+// Shift each RGB channel by `delta` (negative darkens, positive lightens).
+fn shade(c: egui::Color32, delta: i16) -> egui::Color32 {
+    let f = |v: u8| ((v as i16 + delta).clamp(0, 255)) as u8;
+    egui::Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
+}
+
+// Draw an outlined button (transparent fill, colored border + text) whose
+// color shifts on hover/press. Zeroes out each state's `expansion` so the
+// button doesn't grow on hover the way plain `Button::fill()` buttons do.
+fn outline_button(ui: &mut egui::Ui, label: &str, base: egui::Color32, hover: egui::Color32) -> egui::Response {
+    ui.scope(|ui| {
+        let widgets = &mut ui.style_mut().visuals.widgets;
+        for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+            state.expansion = 0.0;
+            state.weak_bg_fill = egui::Color32::TRANSPARENT;
+        }
+        widgets.inactive.bg_stroke = egui::Stroke::new(1.0, base);
+        widgets.inactive.fg_stroke = egui::Stroke::new(1.0, base);
+        widgets.hovered.bg_stroke = egui::Stroke::new(1.0, hover);
+        widgets.hovered.fg_stroke = egui::Stroke::new(1.0, hover);
+        widgets.active.bg_stroke = egui::Stroke::new(1.0, hover);
+        widgets.active.fg_stroke = egui::Stroke::new(1.0, hover);
+        // Extend (rather than the default Wrap) so the button always requests
+        // its full natural width — otherwise, in a `horizontal_wrapped` row,
+        // a button placed in a narrow leftover gap shrinks and wraps its own
+        // text mid-word instead of moving to the next line.
+        ui.add(egui::Button::new(label).small().wrap_mode(egui::TextWrapMode::Extend))
+    })
+    .inner
+}
+
+// Draw a solid-colored button whose fill responds to hover/press, since
+// `Button::fill()` alone paints a flat color with no interaction feedback.
+fn colored_button(ui: &mut egui::Ui, label: &str, base: egui::Color32, min_size: egui::Vec2) -> egui::Response {
+    ui.scope(|ui| {
+        let widgets = &mut ui.style_mut().visuals.widgets;
+        widgets.inactive.weak_bg_fill = base;
+        widgets.hovered.weak_bg_fill = shade(base, 20);
+        widgets.active.weak_bg_fill = shade(base, -20);
+        ui.add(
+            egui::Button::new(egui::RichText::new(label).color(egui::Color32::WHITE).size(16.0))
+                .min_size(min_size)
+                .corner_radius(12.0),
+        )
+    })
+    .inner
+}
+
+// A titled card used to visually group one section of the form (Books to
+// Read, Schedule, Options) — an icon + bold title over a shaded panel,
+// rather than a bare label floating in the page.
+fn section_frame<R>(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    dark_mode: bool,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    // The surrounding canvas is tinted away from the default panel_fill (see
+    // the CentralPanel setup), so using panel_fill itself here makes the card
+    // read as a raised surface against it.
+    let fill = ui.visuals().panel_fill;
+    let stroke = egui::Stroke::new(1.0, if dark_mode { egui::Color32::from_gray(58) } else { egui::Color32::from_gray(222) });
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icon).size(17.0));
+                ui.label(egui::RichText::new(title).size(17.0).strong().color(ui.visuals().strong_text_color()));
+            });
+            ui.add_space(10.0);
+            add_contents(ui)
+        })
+        .inner
+}
+
 fn days_in_month(year: i32, month: u32) -> u32 {
     let (y, m) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
     NaiveDate::from_ymd_opt(y, m, 1)
@@ -167,20 +263,44 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         .map_or(31, |d| d.day())
 }
 
+// Logical window size, in points. Kept constant across UI-scale changes by
+// re-requesting it via `ViewportCommand::InnerSize` (which converts points to
+// physical pixels using the current pixels_per_point) — otherwise a fixed
+// physical window size would leave fewer usable points at higher scales,
+// requiring the user to manually widen/heighten the window.
+const WINDOW_SIZE: [f32; 2] = [560.0, 820.0];
+
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([560.0, 800.0]),
+            .with_inner_size(WINDOW_SIZE),
         ..Default::default()
     };
     eframe::run_native(
         "Bible Reading Planner",
         options,
         Box::new(|_cc| {
-            let app: BiblePlannerApp = std::fs::read_to_string("bible_planner_config.json")
+            let mut app: BiblePlannerApp = std::fs::read_to_string("bible_planner_config.json")
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
+
+            // App preferences (theme, UI scale, output folder, reading speed,
+            // output-format toggles, ...) persist across runs, but the plan
+            // itself — track/book selections, date range, and duration —
+            // always starts fresh rather than remembering the last session.
+            let defaults = BiblePlannerApp::default();
+            app.tracks = defaults.tracks;
+            app.use_date_range = defaults.use_date_range;
+            app.start_year = defaults.start_year;
+            app.start_month = defaults.start_month;
+            app.start_day = defaults.start_day;
+            app.end_year = defaults.end_year;
+            app.end_month = defaults.end_month;
+            app.end_day = defaults.end_day;
+            app.skip_days = defaults.skip_days;
+            app.duration = defaults.duration;
+
             Ok(Box::new(app))
         }),
     )
@@ -201,14 +321,48 @@ struct BiblePlannerApp {
     skip_days: [bool; 7],
     duration: i32,
     include_length: bool,
+    #[serde(default)]
+    include_weekday_column: bool,
+    #[serde(default)]
+    include_header: bool,
+    #[serde(default = "default_dark_mode")]
+    dark_mode: bool,
+    #[serde(default = "default_ui_scale")]
+    ui_scale: f32,
+    #[serde(default)]
+    use_reading_minutes: bool,
+    #[serde(default = "default_reading_speed_wpm")]
+    reading_speed_wpm: u32,
+    #[serde(default = "default_output_dir")]
+    output_dir: String,
+    #[serde(default)]
+    export_ics: bool,
 
     // Session-only state — not persisted
     #[serde(skip)]
+    custom_filename: String,
+    #[serde(skip)]
     last_output: Option<String>,
+    #[serde(skip)]
+    last_ics_output: Option<String>,
     #[serde(skip)]
     status: String,
     #[serde(skip)]
     status_is_error: bool,
+    #[serde(skip)]
+    status_shown_at: Option<std::time::Instant>,
+    #[serde(skip)]
+    confirming_reset: bool,
+    #[serde(skip)]
+    show_settings: bool,
+    #[serde(skip)]
+    show_reading_length_dialog: bool,
+    #[serde(skip)]
+    applied_ui_scale: Option<f32>,
+    // Set when generation is paused to ask the user how to handle a
+    // schedule that's mostly catch-up days; holds the warning message.
+    #[serde(skip)]
+    pending_catchup_warning: Option<String>,
 }
 
 impl Default for BiblePlannerApp {
@@ -219,21 +373,39 @@ impl Default for BiblePlannerApp {
         let mut skip_days = [false; 7];
         skip_days[0] = true; // Sunday
 
+        let next_year = Utc::now().year() + 1;
+
         Self {
             tracks: vec![track],
             use_date_range: true,
-            start_year: 2027,
+            start_year: next_year,
             start_month: 1,
             start_day: 1,
-            end_year: 2027,
+            end_year: next_year,
             end_month: 12,
             end_day: 31,
             skip_days,
             duration: 365,
-            include_length: true,
+            include_length: false,
+            include_weekday_column: false,
+            include_header: false,
+            dark_mode: false,
+            ui_scale: default_ui_scale(),
+            use_reading_minutes: false,
+            reading_speed_wpm: default_reading_speed_wpm(),
+            output_dir: default_output_dir(),
+            export_ics: false,
+            custom_filename: String::new(),
             last_output: None,
+            last_ics_output: None,
             status: String::new(),
             status_is_error: false,
+            status_shown_at: None,
+            confirming_reset: false,
+            show_settings: false,
+            show_reading_length_dialog: false,
+            applied_ui_scale: None,
+            pending_catchup_warning: None,
         }
     }
 }
@@ -247,9 +419,38 @@ impl Default for BiblePlannerApp {
 
 impl eframe::App for BiblePlannerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(20, 16))
-            .show(ui, |ui| { self.panel_contents(ui); });
+        ui.ctx().set_visuals(if self.dark_mode {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        });
+        if self.applied_ui_scale != Some(self.ui_scale) {
+            ui.ctx().set_pixels_per_point(self.ui_scale);
+            // Re-request the same logical size so the window grows in physical
+            // pixels along with the scale, keeping the same usable point-area.
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(WINDOW_SIZE.into()));
+            self.applied_ui_scale = Some(self.ui_scale);
+        }
+        // The `ui` eframe hands us has no background fill, so the window would
+        // otherwise show through to the raw (dark) clear color regardless of
+        // theme. A CentralPanel paints a background first — tinted a bit off
+        // the default panel_fill so the section cards (which use panel_fill
+        // itself) read as raised surfaces against it.
+        let canvas_fill = if self.dark_mode { egui::Color32::from_gray(20) } else { egui::Color32::from_gray(238) };
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).fill(canvas_fill).inner_margin(0))
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(20, 16))
+                    .show(ui, |ui| { self.panel_contents(ui); });
+            });
+
+        let ctx = ui.ctx().clone();
+        self.show_status_toast(&ctx);
+        self.show_settings_dialog(&ctx);
+        self.show_reading_length_dialog(&ctx);
+        self.show_catchup_warning_dialog(&ctx);
     }
 }
 
@@ -259,146 +460,254 @@ impl BiblePlannerApp {
         ui.spacing_mut().item_spacing.y = 6.0;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Bible Reading Planner");
-
-            ui.add_space(8.0);
-            ui.separator();
+            // Bold, cool-toned title with a colored accent rule underneath,
+            // in place of the plain default heading.
+            let accent = if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(100, 210, 255)
+            } else {
+                egui::Color32::from_rgb(0, 105, 148)
+            };
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 40.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new("Bible Reading Planner")
+                            .size(30.0)
+                            .strong()
+                            .color(accent),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let gear = egui::Button::new(egui::RichText::new("⚙").size(22.0)).frame(false);
+                        if ui.add(gear).on_hover_text("Settings").clicked() {
+                            self.show_settings = true;
+                        }
+                    });
+                },
+            );
+            ui.add_space(6.0);
+            let rule_rect = ui
+                .allocate_space(egui::vec2(ui.available_width(), 3.0))
+                .1;
+            ui.painter().rect_filled(rule_rect, 0.0, accent);
             ui.add_space(4.0);
 
             // ── Books ──────────────────────────────────────────────────────
-            ui.label(egui::RichText::new("Books to Read").strong());
-            ui.add_space(4.0);
+            section_frame(ui, "📖", "Books to Read", self.dark_mode, |ui| {
+                let mut to_remove: Option<usize> = None;
+                let removable = self.tracks.len() > 1;
 
-            let mut to_remove: Option<usize> = None;
-            let removable = self.tracks.len() > 1;
+                for (idx, track) in self.tracks.iter_mut().enumerate() {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::same(12))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            if track.show(ui, idx, removable) {
+                                to_remove = Some(idx);
+                            }
+                        });
+                    ui.add_space(8.0);
+                }
+                if let Some(idx) = to_remove {
+                    self.tracks.remove(idx);
+                }
+                if ui.button("+ Add Track").clicked() {
+                    self.tracks.push(ReadingTrack::empty());
+                }
+            });
 
-            for (idx, track) in self.tracks.iter_mut().enumerate() {
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::same(12))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
-                    .corner_radius(4.0)
-                    .show(ui, |ui| {
-                        if track.show(ui, idx, removable) {
-                            to_remove = Some(idx);
-                        }
-                    });
-                ui.add_space(8.0);
-            }
-            if let Some(idx) = to_remove {
-                self.tracks.remove(idx);
-            }
-            if ui.button("+ Add Track").clicked() {
-                self.tracks.push(ReadingTrack::empty());
-            }
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(10.0);
 
             // ── Schedule ───────────────────────────────────────────────────
-            ui.label(egui::RichText::new("Schedule").strong());
-            ui.add_space(2.0);
+            section_frame(ui, "📅", "Schedule", self.dark_mode, |ui| {
+                // radio_value(&mut field, value_when_selected, "label")
+                // The field is set to `value_when_selected` when this radio is clicked.
+                ui.radio_value(&mut self.use_date_range, true, "Date range");
+                if self.use_date_range {
+                    ui.indent("date_range_fields", |ui| {
+                        const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun",
+                                                    "Jul","Aug","Sep","Oct","Nov","Dec"];
 
-            // radio_value(&mut field, value_when_selected, "label")
-            // The field is set to `value_when_selected` when this radio is clicked.
-            ui.radio_value(&mut self.use_date_range, true,  "Date range");
-            ui.radio_value(&mut self.use_date_range, false, "Fixed duration (days)");
-            ui.add_space(4.0);
+                        // Clamp stored days to the real maximum for the selected month/year.
+                        let start_max = days_in_month(self.start_year, self.start_month);
+                        self.start_day = self.start_day.min(start_max);
+                        let end_max = days_in_month(self.end_year, self.end_month);
+                        self.end_day = self.end_day.min(end_max);
 
-            if self.use_date_range {
-                const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun",
-                                            "Jul","Aug","Sep","Oct","Nov","Dec"];
+                        // `Grid` lines up labels and controls in neat columns.
+                        egui::Grid::new("dates_grid").num_columns(4).show(ui, |ui| {
+                            ui.label("Start date:");
+                            ui.add(egui::DragValue::new(&mut self.start_year).range(2020..=2100));
+                            egui::ComboBox::from_id_salt("start_month")
+                                .width(50.0)
+                                .selected_text(MONTHS[(self.start_month - 1) as usize])
+                                .show_ui(ui, |ui| {
+                                    for (i, &name) in MONTHS.iter().enumerate() {
+                                        ui.selectable_value(&mut self.start_month, (i + 1) as u32, name);
+                                    }
+                                });
+                            ui.add(egui::DragValue::new(&mut self.start_day).range(1..=start_max).prefix("Day "));
+                            ui.end_row();
 
-                // Clamp stored days to the real maximum for the selected month/year.
-                let start_max = days_in_month(self.start_year, self.start_month);
-                self.start_day = self.start_day.min(start_max);
-                let end_max = days_in_month(self.end_year, self.end_month);
-                self.end_day = self.end_day.min(end_max);
+                            ui.label("End date:");
+                            ui.add(egui::DragValue::new(&mut self.end_year).range(2020..=2100));
+                            egui::ComboBox::from_id_salt("end_month")
+                                .width(50.0)
+                                .selected_text(MONTHS[(self.end_month - 1) as usize])
+                                .show_ui(ui, |ui| {
+                                    for (i, &name) in MONTHS.iter().enumerate() {
+                                        ui.selectable_value(&mut self.end_month, (i + 1) as u32, name);
+                                    }
+                                });
+                            ui.add(egui::DragValue::new(&mut self.end_day).range(1..=end_max).prefix("Day "));
+                            ui.end_row();
+                        });
 
-                // `Grid` lines up labels and controls in neat columns.
-                egui::Grid::new("dates_grid").num_columns(4).show(ui, |ui| {
-                    ui.label("Start date:");
-                    ui.add(egui::DragValue::new(&mut self.start_year).range(2020..=2100));
-                    egui::ComboBox::from_id_salt("start_month")
-                        .selected_text(MONTHS[(self.start_month - 1) as usize])
-                        .show_ui(ui, |ui| {
-                            for (i, &name) in MONTHS.iter().enumerate() {
-                                ui.selectable_value(&mut self.start_month, (i + 1) as u32, name);
+                        ui.add_space(4.0);
+                        // `horizontal` places widgets side-by-side on one line.
+                        ui.horizontal(|ui| {
+                            ui.label("Skip weekdays:");
+                            let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                            for (i, name) in names.iter().enumerate() {
+                                ui.checkbox(&mut self.skip_days[i], *name);
                             }
                         });
-                    ui.add(egui::DragValue::new(&mut self.start_day).range(1..=start_max).prefix("Day "));
-                    ui.end_row();
+                    });
+                    ui.add_space(4.0);
+                }
 
-                    ui.label("End date:");
-                    ui.add(egui::DragValue::new(&mut self.end_year).range(2020..=2100));
-                    egui::ComboBox::from_id_salt("end_month")
-                        .selected_text(MONTHS[(self.end_month - 1) as usize])
-                        .show_ui(ui, |ui| {
-                            for (i, &name) in MONTHS.iter().enumerate() {
-                                ui.selectable_value(&mut self.end_month, (i + 1) as u32, name);
-                            }
+                ui.radio_value(&mut self.use_date_range, false, "Fixed duration (days)");
+                if !self.use_date_range {
+                    ui.indent("fixed_duration_fields", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Duration:");
+                            ui.add(egui::DragValue::new(&mut self.duration).range(1..=3650).suffix(" days"));
                         });
-                    ui.add(egui::DragValue::new(&mut self.end_day).range(1..=end_max).prefix("Day "));
-                    ui.end_row();
-                });
+                    });
+                }
 
-                ui.add_space(4.0);
-                // `horizontal` places widgets side-by-side on one line.
-                ui.horizontal(|ui| {
-                    ui.label("Skip weekdays:");
-                    let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-                    for (i, name) in names.iter().enumerate() {
-                        ui.checkbox(&mut self.skip_days[i], *name);
-                    }
-                });
-            } else {
-                ui.horizontal(|ui| {
-                    ui.label("Duration:");
-                    ui.add(egui::DragValue::new(&mut self.duration).range(1..=3650).suffix(" days"));
-                });
-            }
+            });
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(10.0);
 
             // ── Options ────────────────────────────────────────────────────
-            ui.label(egui::RichText::new("Options").strong());
-            ui.add_space(2.0);
-            ui.checkbox(&mut self.include_length, "Include daily word count in output");
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(8.0);
-
-            // ── Generate button ────────────────────────────────────────────
-            // `button` returns a Response; `.clicked()` is true for exactly
-            // the one frame the user releases the mouse button.
-            if ui.button("  Generate Plan  ").clicked() {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.generate_plan();
-                }));
-                if result.is_err() {
-                    self.status = "Plan generation failed — the settings caused an internal error. Try a different date range or book selection.".to_string();
-                    self.status_is_error = true;
+            section_frame(ui, "🔧", "Options", self.dark_mode, |ui| {
+                ui.horizontal(|ui| {
+                    let response = ui.checkbox(&mut self.include_length, "Include daily reading length in output");
+                    if response.changed() && self.include_length {
+                        self.show_reading_length_dialog = true;
+                    }
+                    if self.include_length && ui.small_button("Configure...").clicked() {
+                        self.show_reading_length_dialog = true;
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Output folder:");
+                    ui.label(egui::RichText::new(&self.output_dir).weak());
+                    if ui.small_button("Browse...").clicked() {
+                        if let Some(dir) = rfd::FileDialog::new()
+                            .set_directory(&self.output_dir)
+                            .pick_folder()
+                        {
+                            self.output_dir = dir.to_string_lossy().to_string();
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Output filename:");
+                    // TextEdit has no visible border at rest by default (only on
+                    // hover/focus), so give it a constant one here.
+                    let border = ui.visuals().widgets.noninteractive.bg_stroke;
+                    let corner_radius = ui.visuals().widgets.inactive.corner_radius;
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.custom_filename)
+                            .hint_text("leave blank for auto-generated name")
+                            .frame(
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                                    .stroke(border)
+                                    .corner_radius(corner_radius),
+                            ),
+                    );
+                });
+                ui.label(egui::RichText::new(format!(".csv is added automatically; saved under {}/", self.output_dir)).weak());
+                ui.add_space(4.0);
+                ui.add_enabled_ui(self.use_date_range, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.export_ics, "Also export a calendar file (.ics) for Google/Apple Calendar");
+                        if self.export_ics {
+                            let info = ui.small_button("ℹ").on_hover_text("How to use the calendar file");
+                            egui::Popup::from_toggle_button_response(&info).show(|ui| {
+                                ui.set_max_width(320.0);
+                                ui.label(egui::RichText::new("Using the calendar file").strong());
+                                ui.add_space(4.0);
+                                ui.label("The .ics file has one all-day event per reading day. Import it into your calendar app:");
+                                ui.add_space(4.0);
+                                ui.label("• Google Calendar (web): Settings → Import & export → Import, then choose the file.");
+                                ui.label("• Apple Calendar (Mac): File → Import…, then choose the file.");
+                                ui.label("• iPhone/iPad: AirDrop or email yourself the file, then tap it to add the events.");
+                            });
+                        }
+                    });
+                });
+                if !self.use_date_range {
+                    ui.label(egui::RichText::new("Calendar export needs a date range, not a fixed duration.").weak());
                 }
-            }
+            });
 
-            // Status line — green on success, red on error
-            if !self.status.is_empty() {
-                ui.add_space(8.0);
-                let color = if self.status_is_error {
-                    egui::Color32::RED
-                } else {
-                    egui::Color32::from_rgb(0, 160, 0)
-                };
-                ui.colored_label(color, &self.status);
-            }
-            if let Some(path) = &self.last_output.clone() {
-                if ui.button("Open output file").clicked() {
-                    open_file(path);
+            ui.add_space(14.0);
+
+            // ── Generate / Close buttons ──────────────────────────────────
+            // Darker green reads well against light mode's white panel; a
+            // brighter green stays visible against dark mode's near-black one.
+            let generate_fill = if self.dark_mode {
+                egui::Color32::from_rgb(67, 160, 71)
+            } else {
+                egui::Color32::from_rgb(46, 125, 50)
+            };
+            let close_fill = if self.dark_mode {
+                egui::Color32::from_rgb(198, 40, 40)
+            } else {
+                egui::Color32::from_rgb(178, 34, 34)
+            };
+            let button_size = egui::vec2(180.0, 40.0);
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), button_size.y),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    // Added first so right_to_left places it at the right edge.
+                    if colored_button(ui, "Generate Plan", generate_fill, button_size).clicked() {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            self.generate_plan();
+                        }));
+                        if result.is_err() {
+                            self.set_status("Plan generation failed — the settings caused an internal error. Try a different date range or book selection.", true);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if colored_button(ui, "Close", close_fill, button_size).clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                },
+            );
+
+            // Status is shown as a centered toast (see show_status_toast) rather than inline here.
+            ui.horizontal(|ui| {
+                if let Some(path) = &self.last_output.clone() {
+                    if ui.button("Open output file").clicked() {
+                        open_file(path);
+                    }
                 }
-            }
+                if let Some(path) = &self.last_ics_output.clone() {
+                    if ui.button("Open calendar file").clicked() {
+                        open_file(path);
+                    }
+                }
+            });
         });
     }
 }
@@ -406,7 +715,300 @@ impl BiblePlannerApp {
 // ── Planning logic called from the GUI ───────────────────────────────────────
 
 impl BiblePlannerApp {
+    fn set_status(&mut self, message: impl Into<String>, is_error: bool) {
+        self.status = message.into();
+        self.status_is_error = is_error;
+        self.status_shown_at = Some(std::time::Instant::now());
+    }
+
+    // Status/warning toast, centered over the whole window. Auto-dismisses
+    // five seconds after being shown, or immediately on click.
+    fn show_status_toast(&mut self, ctx: &egui::Context) {
+        if self.status.is_empty() {
+            return;
+        }
+
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        let elapsed = self.status_shown_at.map_or(TIMEOUT, |t| t.elapsed());
+        if elapsed >= TIMEOUT {
+            self.status.clear();
+            return;
+        }
+
+        let message = self.status.clone();
+        let is_error = self.status_is_error;
+        let mut dismissed = false;
+
+        egui::Area::new(egui::Id::new("status_toast"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                const DARK_RED: egui::Color32 = egui::Color32::from_rgb(139, 0, 0);
+                let (fill, stroke, text_color) = if is_error {
+                    (egui::Color32::from_rgb(255, 235, 235), egui::Stroke::new(2.0, DARK_RED), DARK_RED)
+                } else {
+                    (
+                        egui::Color32::from_rgb(46, 125, 50),
+                        egui::Stroke::NONE,
+                        egui::Color32::WHITE,
+                    )
+                };
+                let response = egui::Frame::new()
+                    .fill(fill)
+                    .stroke(stroke)
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(18, 14))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&message).color(text_color).strong(),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                    })
+                    .inner;
+                if response.clicked() {
+                    dismissed = true;
+                }
+            });
+
+        if dismissed {
+            self.status.clear();
+        } else {
+            // Keep repainting so the timeout elapses even without further input.
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // Settings dialog, shown as a modal over the rest of the app. Each
+    // individual setting is separated from the next with a horizontal rule.
+    fn show_settings_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
+
+        let mut close = false;
+
+        let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
+        let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
+        let modal = egui::Modal::new(egui::Id::new("settings_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_min_width(320.0);
+            ui.add_space(8.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(320.0, 24.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.heading("⚙ Settings");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("X").clicked() {
+                            close = true;
+                        }
+                    });
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label("Theme:");
+                ui.radio_value(&mut self.dark_mode, false, "Light");
+                ui.radio_value(&mut self.dark_mode, true, "Dark");
+            });
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label("UI scale:");
+                ui.radio_value(&mut self.ui_scale, 1.0, "Small");
+                ui.radio_value(&mut self.ui_scale, 1.2, "Medium");
+                ui.radio_value(&mut self.ui_scale, 1.4, "Large");
+                ui.radio_value(&mut self.ui_scale, 1.6, "Extra large");
+            });
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.checkbox(&mut self.include_weekday_column, "Include weekday as its own column in output");
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.checkbox(&mut self.include_header, "Include column header row in output");
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            if !self.confirming_reset {
+                let gray = egui::Color32::from_gray(130);
+                let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
+                if outline_button(ui, "Reset to Defaults", gray, gray_hover).clicked() {
+                    self.confirming_reset = true;
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Erase all selections and settings?").weak());
+                    if ui.small_button("Confirm").clicked() {
+                        *self = Self::default();
+                        self.set_status("Settings reset to defaults.", false);
+                        close = true;
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        self.confirming_reset = false;
+                    }
+                });
+            }
+            ui.add_space(8.0);
+        });
+
+        if close || modal.should_close() {
+            self.show_settings = false;
+            self.confirming_reset = false;
+        }
+    }
+
+    // Reading-length dialog, shown as a modal when "Include daily reading
+    // length in output" is first checked (or reopened via "Configure...").
+    fn show_reading_length_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_reading_length_dialog {
+            return;
+        }
+
+        let mut close = false;
+
+        let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
+        let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
+        let modal = egui::Modal::new(egui::Id::new("reading_length_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_min_width(320.0);
+            ui.add_space(8.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(320.0, 24.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.heading("Reading Length");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("X").clicked() {
+                            close = true;
+                        }
+                    });
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label("Reading length shown as:");
+                ui.radio_value(&mut self.use_reading_minutes, false, "Word count");
+                ui.radio_value(&mut self.use_reading_minutes, true, "Minutes");
+            });
+            if self.use_reading_minutes {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Reading speed:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.reading_speed_wpm)
+                            .range(50..=600)
+                            .suffix(" words/min"),
+                    );
+                });
+            }
+            ui.add_space(8.0);
+        });
+
+        if close || modal.should_close() {
+            self.show_reading_length_dialog = false;
+        }
+    }
+
+    // Shown instead of generating when a track's book selection has far
+    // fewer chapters than the plan's duration (see `catchup_warning`), so a
+    // mostly-catch-up-days plan is never produced silently.
+    fn show_catchup_warning_dialog(&mut self, ctx: &egui::Context) {
+        let Some(message) = self.pending_catchup_warning.clone() else {
+            return;
+        };
+
+        let mut dismiss = false;
+        let mut proceed = false;
+
+        let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
+        let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
+        let modal = egui::Modal::new(egui::Id::new("catchup_warning_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_min_width(340.0);
+            ui.add_space(8.0);
+            ui.heading("Mostly Catch-up Days");
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(&message);
+            ui.add_space(12.0);
+
+            if colored_button(
+                ui,
+                "Include catch-up days",
+                if self.dark_mode { egui::Color32::from_rgb(67, 160, 71) } else { egui::Color32::from_rgb(46, 125, 50) },
+                egui::vec2(ui.available_width(), 32.0),
+            ).clicked() {
+                proceed = true;
+            }
+            ui.add_space(6.0);
+            if outline_button(ui, "Re-enter schedule/duration", egui::Color32::from_gray(130), egui::Color32::from_gray(90)).clicked() {
+                dismiss = true;
+            }
+            ui.add_space(4.0);
+        });
+
+        if proceed {
+            self.pending_catchup_warning = None;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.generate_plan_impl(true);
+            }));
+            if result.is_err() {
+                self.set_status("Plan generation failed — the settings caused an internal error. Try a different date range or book selection.", true);
+            }
+        } else if dismiss || modal.should_close() {
+            self.pending_catchup_warning = None;
+        }
+    }
+
+    // Returns a warning message if any track's selected books have far
+    // fewer chapters than the plan's duration — meaning a large share of
+    // the plan's days would silently become catch-up days.
+    fn catchup_warning(&self, book_indexes: &[Vec<i32>], duration: i32) -> Option<String> {
+        if duration <= 0 {
+            return None;
+        }
+
+        let mut worst: Option<(i32, f64)> = None;
+        for book_index in book_indexes {
+            let Ok(bible_data) = get_bible_chapter_data("bible.csv", book_index.clone(), true) else { continue; };
+            let total_chapters: i32 = bible_data.iter().map(|b| b.chapters).sum();
+            if total_chapters <= 0 {
+                continue;
+            }
+            let catchup_days = (duration - total_chapters).max(0);
+            let ratio = catchup_days as f64 / duration as f64;
+            if ratio >= 0.25 && worst.map_or(true, |(_, best_ratio)| ratio > best_ratio) {
+                worst = Some((total_chapters, ratio));
+            }
+        }
+
+        worst.map(|(chapters, _)| {
+            format!(
+                "The number of chapters ({}) is significantly less than the number of reading days ({}). \
+                 Most days would be catch-up days with nothing new to read.",
+                chapters, duration
+            )
+        })
+    }
+
     fn generate_plan(&mut self) {
+        self.generate_plan_impl(false);
+    }
+
+    fn generate_plan_impl(&mut self, skip_catchup_check: bool) {
         // Build book index lists from the track selections
         let mut book_indexes: Vec<Vec<i32>> = Vec::new();
         for track in &self.tracks {
@@ -423,8 +1025,7 @@ impl BiblePlannerApp {
             book_indexes.push(repeated);
         }
         if book_indexes.is_empty() {
-            self.status = "Please select at least one book.".to_string();
-            self.status_is_error = true;
+            self.set_status("Please select at least one book.", true);
             return;
         }
 
@@ -441,15 +1042,14 @@ impl BiblePlannerApp {
         let (duration, day_dates) = if self.use_date_range {
             let start = match NaiveDate::from_ymd_opt(self.start_year, self.start_month, self.start_day) {
                 Some(d) => d,
-                None => { self.status = "Invalid start date.".to_string(); self.status_is_error = true; return; }
+                None => { self.set_status("Invalid start date.", true); return; }
             };
             let end = match NaiveDate::from_ymd_opt(self.end_year, self.end_month, self.end_day) {
                 Some(d) => d,
-                None => { self.status = "Invalid end date.".to_string(); self.status_is_error = true; return; }
+                None => { self.set_status("Invalid end date.", true); return; }
             };
             if end <= start {
-                self.status = "End date must be after start date.".to_string();
-                self.status_is_error = true;
+                self.set_status("End date must be after start date.", true);
                 return;
             }
             (get_duration(start, end, &weekdays_to_skip),
@@ -458,19 +1058,41 @@ impl BiblePlannerApp {
             (self.duration, Vec::new())
         };
 
+        if !skip_catchup_check {
+            if let Some(message) = self.catchup_warning(&book_indexes, duration) {
+                self.pending_catchup_warning = Some(message);
+                return;
+            }
+        }
+
         // Run the existing planning pipeline
-        let filename = format!("reading_plan_{}", Utc::now().timestamp());
+        let output_dir = self.output_dir.trim();
+        let output_dir = if output_dir.is_empty() { "reading_plan" } else { output_dir };
+        if let Err(e) = std::fs::create_dir_all(output_dir) {
+            self.set_status(format!("Error creating output directory: {}", e), true);
+            return;
+        }
+        let filename = if self.custom_filename.trim().is_empty() {
+            format!("{}/reading_plan_{}", output_dir, Utc::now().timestamp())
+        } else {
+            let mut name = self.custom_filename.trim().to_string();
+            name = name.replace(['/', '\\'], "_");
+            if let Some(stripped) = name.strip_suffix(".csv") {
+                name = stripped.to_string();
+            }
+            format!("{}/{}", output_dir, name)
+        };
         let mut combined_plan: Vec<Vec<ChaptersDays>> = Vec::new();
         let mut combined_lengths: Vec<DailyLength> = Vec::new();
 
         for book_index in book_indexes {
             let bible_data = match get_bible_chapter_data("bible.csv", book_index.clone(), true) {
                 Ok(d) => d,
-                Err(e) => { self.status = format!("Error reading bible.csv: {}", e); self.status_is_error = true; return; }
+                Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
             };
             let chapter_data = match get_bible_chapter_data("bible.csv", book_index.clone(), false) {
                 Ok(d) => d,
-                Err(e) => { self.status = format!("Error reading bible.csv: {}", e); self.status_is_error = true; return; }
+                Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
             };
 
             let tcd  = get_books_in_days(bible_data.clone(), duration);
@@ -493,20 +1115,39 @@ impl BiblePlannerApp {
 
         combined_lengths.sort_by_key(|k| k.day);
 
+        let wpm = if self.use_reading_minutes { Some(self.reading_speed_wpm) } else { None };
         let csv_path = format!("{}.csv", filename);
-        match write_to_file(&filename, combined_plan, combined_lengths, self.include_length, day_dates) {
+
+        let ics_result = if self.export_ics && !day_dates.is_empty() {
+            Some(write_ics_file(&filename, &combined_plan, &combined_lengths, self.include_length, &day_dates, wpm))
+        } else {
+            None
+        };
+
+        match write_to_file(&filename, combined_plan, combined_lengths, self.include_length, day_dates, wpm, self.include_weekday_column, self.include_header) {
             Ok(_) => {
-                self.status = format!("Written to {}", csv_path);
-                self.last_output = Some(csv_path);
-                self.status_is_error = false;
+                self.last_output = Some(csv_path.clone());
+                let mut message = format!("Written to {}", csv_path);
+                match ics_result {
+                    Some(Ok(())) => {
+                        let ics_path = format!("{}.ics", filename);
+                        self.last_ics_output = Some(ics_path.clone());
+                        message = format!("{} and {}", message, ics_path);
+                    }
+                    Some(Err(e)) => {
+                        self.last_ics_output = None;
+                        message = format!("{} (calendar export failed: {})", message, e);
+                    }
+                    None => { self.last_ics_output = None; }
+                }
+                self.set_status(message, false);
                 // Persist settings after a successful generation
                 if let Ok(json) = serde_json::to_string_pretty(self) {
                     let _ = std::fs::write("bible_planner_config.json", json);
                 }
             }
             Err(e) => {
-                self.status = format!("Error: {}", e);
-                self.status_is_error = true;
+                self.set_status(format!("Error: {}", e), true);
             }
         }
     }
@@ -593,13 +1234,16 @@ fn get_bible_chapter_data(file_path: &str, book_index: Vec<i32>, accumulate: boo
 // based on the book indexes and the dates provided. Each element in the returned vector
 // represents a group of books to be read within a single day
 fn get_books_in_days(bible_data: Vec<ChapterData>, duration: i32) -> Vec<ChaptersDays> {
-  let mut result = Vec::new();
+  // Group books into (titles, chapters, raw fractional day share) — small
+  // books get combined onto a shared day, larger ones stand alone — without
+  // rounding yet, so the whole set of shares can be apportioned together.
+  let mut groups: Vec<(Vec<String>, i32, f64)> = Vec::new();
 
   // Temporary storage for book titles that will be combined into a single day's reading.
   let mut temp_titles: Vec<String> = Vec::new();
   // Accumulators for the total number of chapters from and the total number of days required for the temporary book(s).
   let mut temp_chapters: i32 = 0;
-  let mut temp_days: f32 = 0.0;
+  let mut temp_days: f64 = 0.0;
 
   let total_chapter_count: i32 = bible_data.iter().map(|b| b.chapters).sum();
   // If duration exceeds chapter count, cap planning to chapter count; the extra days become catch-up days in adjust_days.
@@ -609,26 +1253,24 @@ fn get_books_in_days(bible_data: Vec<ChapterData>, duration: i32) -> Vec<Chapter
 
   for book in bible_data {
       // Number of days needed to read the current book.
-      let days: f32 = (book.length as f32 / total_word_count as f32) * effective_duration as f32;
+      let days: f64 = (book.length as f64 / total_word_count as f64) * effective_duration as f64;
       // Combine books for partial days.
       if days >= 0.66 {
           // If there are already books scheduled for the current day, finalize the day's schedule and start a new one.
           if !temp_titles.is_empty() {
-              push_new_element(&mut result, temp_titles, temp_chapters, temp_days, effective_duration);
-              temp_titles = Vec::new();
+              groups.push((std::mem::take(&mut temp_titles), temp_chapters, temp_days));
               temp_chapters = 0;
               temp_days = 0.0;
           }
-          push_new_element(&mut result, vec![book.title], book.chapters, days, effective_duration);
+          groups.push((vec![book.title], book.chapters, days));
       } else {
           // If the book fits within the current day, add it to the temporary storage.
           temp_titles.push(book.title);
           temp_chapters += book.chapters;
-          temp_days += days as f32;
+          temp_days += days;
           // If the accumulated days for the current day exceed one, finalize the day's schedule and start a new one.
           if temp_days >= 1.0 {
-              push_new_element(&mut result, temp_titles, temp_chapters, temp_days, effective_duration);
-              temp_titles = Vec::new();
+              groups.push((std::mem::take(&mut temp_titles), temp_chapters, temp_days));
               temp_chapters = 0;
               temp_days = 0.0;
           }
@@ -636,26 +1278,65 @@ fn get_books_in_days(bible_data: Vec<ChapterData>, duration: i32) -> Vec<Chapter
   }
   // After iterating through all books, check if any remaining books must be scheduled for the last day.
   if !temp_titles.is_empty() {
-      push_new_element(&mut result, temp_titles, temp_chapters, temp_days, effective_duration);
+      groups.push((temp_titles, temp_chapters, temp_days));
   }
-  result
+
+  let shares: Vec<f64> = groups.iter().map(|&(_, _, days)| days).collect();
+  let rounded_days = apportion_days(&shares, effective_duration);
+
+  groups.into_iter().zip(rounded_days)
+      .map(|((titles, chapters, _), days)| ChaptersDays { titles, chapters, days })
+      .collect()
 }
 
-// Used in function get_books_in_days
-fn push_new_element(result: &mut Vec<ChaptersDays>, titles: Vec<String>, chapters: i32, days: f32, duration: i32) {
-  // Round down for a large number of days, otherwise round to the nearest whole.
-  let rdays_threshold = duration as f32 / 30.0;
-  let rounded_days = if days > rdays_threshold {
-      days.floor() as i32
-  } else {
-      days.round() as i32
-  };
+// Round fractional day shares to whole days that sum to exactly `total`,
+// while keeping every share at least 1 day. Rounding each share
+// independently (as this used to do, floor/round based on an ad-hoc
+// threshold) has no way to know about the others: many books each rounding
+// up by a fraction, or many small books each floored up to the required
+// minimum of 1 day, can push the *sum* of all per-book day counts above (or
+// below) `total` with nothing to correct it afterward.
+//
+// This uses the "largest remainder" apportionment method instead: take the
+// floor of each share (but never below 1), then hand out the still-missing
+// days one at a time to the shares with the largest fractional remainder —
+// the standard way to round a set of shares to whole numbers that add up to
+// an exact target. In the rare case where the per-share minimum of 1 alone
+// already exceeds `total` (more groups than available days), a day is taken
+// back from the smallest shares (down to their own minimum of 1) instead.
+fn apportion_days(shares: &[f64], total: i32) -> Vec<i32> {
+    let n = shares.len();
+    if n == 0 {
+        return Vec::new();
+    }
 
-  // Ensure that rounded_days is at least 1
-  let rounded_days = rounded_days.max(1);
+    let mut days: Vec<i32> = shares.iter().map(|&s| (s.floor() as i32).max(1)).collect();
+    let remainder: Vec<f64> = shares.iter().zip(&days).map(|(&s, &d)| s - d as f64).collect();
+    let allocated: i32 = days.iter().sum();
+    let deficit = total - allocated;
 
-  let new_element = ChaptersDays { titles, chapters, days: rounded_days };
-  result.push(new_element);
+    if deficit > 0 {
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| remainder[b].partial_cmp(&remainder[a]).unwrap());
+        for &i in order.iter().take(deficit as usize) {
+            days[i] += 1;
+        }
+    } else if deficit < 0 {
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| shares[a].partial_cmp(&shares[b]).unwrap());
+        let mut to_remove = -deficit;
+        for &i in &order {
+            if to_remove == 0 {
+                break;
+            }
+            if days[i] > 1 {
+                days[i] -= 1;
+                to_remove -= 1;
+            }
+        }
+    }
+
+    days
 }
 
 fn get_chapters_days_by_length(chapter_data: Vec<ChapterData>, titles_chapters_days: Vec<ChaptersDays>, duration: i32) -> Vec<ChaptersDays> {
@@ -693,7 +1374,6 @@ fn get_chapters_days_by_length(chapter_data: Vec<ChapterData>, titles_chapters_d
 
     // Load the data for the particular book into chapters
     let title = &books.titles[0];
-    let book_days: f64 = books.days as f64;
     let mut chapters: Vec<ChapterData> = Vec::new();
 
     for data in chapter_data.clone() {
@@ -706,58 +1386,141 @@ fn get_chapters_days_by_length(chapter_data: Vec<ChapterData>, titles_chapters_d
         }
     }
 
-    let total_words: f64 = chapters.clone().into_iter().map(|chapter| chapter.length as f64).sum();
-    let average_words_per_day: f64 = total_words / book_days;
+    let lengths: Vec<i32> = chapters.iter().map(|c| c.length).collect();
+    let group_sizes = split_into_balanced_groups(&lengths, books.days as usize);
 
-    // Perform binary search to find the optimal distribution of chapters across days.
-    let mut low = 0.0;
-    let mut high = 1.0;
-    let mut tuner = 0.0;
-    loop {
-        // Group chapters based on the average words per day.
-        let mut datasets: Vec<Vec<i32>> = Vec::new();
-        let mut current_group_total_words: f64 = 0.0;
-        let mut chapter_numbers: Vec<i32> = Vec::new();
-
-        for chapter in chapters.clone() {
-            current_group_total_words += chapter.length as f64;
-            chapter_numbers.push(chapter.chapters);
-
-            // Continue if the current group's word count exceeds the average.
-            if (average_words_per_day - current_group_total_words) / average_words_per_day > tuner {
-                continue;
-            } else {
-                datasets.push(chapter_numbers.clone());
-                current_group_total_words = 0.0;
-                chapter_numbers.clear();
-            }
+    let mut chapter_iter = chapters.iter();
+    for size in group_sizes {
+        let mut last_chapter = 0;
+        for _ in 0..size {
+            last_chapter = chapter_iter.next().unwrap().chapters;
         }
-
-        // Add any remaining chapters to the last dataset.
-        if !chapter_numbers.is_empty() {
-            datasets.push(chapter_numbers.clone());
-        }
-
-        // When the number of datasets matches the number of days, assign chapters to dates.
-        if (datasets.len() as f64) == book_days {
-            for dataset in datasets.into_iter() {
-                title_chapters_days.push(ChaptersDays {
-                    titles: books.titles.clone(),
-                    chapters: *dataset.last().unwrap(),
-                    days: current_day,
-                });
-                current_day += 1;
-            }
-            break;
-        } else if (datasets.len() as f64) < book_days {
-            low = tuner;
-        } else {
-            high = tuner;
-        }
-        tuner = (low + high) / 2.0;
+        title_chapters_days.push(ChaptersDays {
+            titles: books.titles.clone(),
+            chapters: last_chapter,
+            days: current_day,
+        });
+        current_day += 1;
     }
   }
   title_chapters_days
+}
+
+// Partition `lengths` (kept in original chapter order) into exactly
+// `num_groups` contiguous groups, and return each group's chapter count.
+// Chosen, in order of priority, to (1) minimize the largest group's total,
+// then (2) among all splits achieving that minimum, minimize the spread
+// (variance) across groups.
+//
+// The previous approach greedily folded chapters into an open group until
+// its running total reached the book's per-day average, with no lookahead.
+// That meant a chapter far larger than the average (e.g. Psalm 119, ~9x a
+// typical psalm) would get merged onto whatever small chapters (e.g. 117,
+// 118) were still accumulating in the open group, rather than starting its
+// own day.
+//
+// Phase 1 finds the smallest per-day cap that still fits the chapters into
+// `num_groups` days — this is what stops an oversized chapter from
+// absorbing its small neighbors. But a plain greedy pack-to-cap can still
+// end up with uneven groups elsewhere (e.g. some groups well under the cap
+// because the next chapter would have tipped them over, others sitting
+// right at it), which *raises* the spread even as it lowers the worst case.
+// Phase 2 fixes that: among all ways to split into exactly `num_groups`
+// groups without exceeding the cap, it uses a DP to pick the one minimizing
+// the sum of squared group totals — equivalent to minimizing variance,
+// since the overall total is fixed regardless of how it's split.
+fn split_into_balanced_groups(lengths: &[i32], num_groups: usize) -> Vec<usize> {
+    let n = lengths.len();
+    let num_groups = num_groups.max(1).min(n.max(1));
+    if n == 0 {
+        return Vec::new();
+    }
+    if num_groups >= n {
+        return vec![1; n];
+    }
+
+    let lens: Vec<i64> = lengths.iter().map(|&l| l as i64).collect();
+    let mut prefix = vec![0i64; n + 1];
+    for i in 0..n {
+        prefix[i + 1] = prefix[i] + lens[i];
+    }
+    let range_sum = |a: usize, b: usize| prefix[b] - prefix[a]; // sum of lens[a..b]
+
+    // Phase 1: binary search the smallest cap that fits within `num_groups`
+    // contiguous groups (standard "split array, minimize the largest sum").
+    let groups_needed_for_cap = |cap: i64| -> usize {
+        let mut groups = 0usize;
+        let mut current = 0i64;
+        for &len in &lens {
+            if current > 0 && current + len > cap {
+                groups += 1;
+                current = 0;
+            }
+            current += len;
+        }
+        if current > 0 {
+            groups += 1;
+        }
+        groups
+    };
+    let mut low = *lens.iter().max().unwrap();
+    let mut high: i64 = lens.iter().sum();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if groups_needed_for_cap(mid) <= num_groups {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    let cap = low;
+
+    // Phase 2: DP over (chapter index, group count) minimizing the sum of
+    // squared group totals, restricted to groups that respect `cap`.
+    // dp[i][k] = best cost to split the first i chapters into k groups;
+    // choice[i][k] = the start index of the k-th (last) group.
+    const UNREACHABLE: i64 = i64::MAX / 4;
+    let mut dp = vec![vec![UNREACHABLE; num_groups + 1]; n + 1];
+    let mut choice = vec![vec![0usize; num_groups + 1]; n + 1];
+    dp[0][0] = 0;
+    for i in 1..=n {
+        let max_k = num_groups.min(i);
+        for k in 1..=max_k {
+            // j is the start of the last group (chapters j..i). As j
+            // decreases, the group's sum only grows, so stop once it
+            // exceeds the cap.
+            for j in (k - 1..i).rev() {
+                let sum = range_sum(j, i);
+                if sum > cap {
+                    break;
+                }
+                if dp[j][k - 1] == UNREACHABLE {
+                    continue;
+                }
+                let cost = dp[j][k - 1] + sum * sum;
+                if cost < dp[i][k] {
+                    dp[i][k] = cost;
+                    choice[i][k] = j;
+                }
+            }
+        }
+    }
+
+    // Reconstruct group sizes by walking the choice table backwards. `cap`
+    // was chosen so that an exact `num_groups`-way split always exists (a
+    // single chapter alone never exceeds it), so dp[n][num_groups] is
+    // always reachable here.
+    let mut sizes = Vec::with_capacity(num_groups);
+    let mut i = n;
+    let mut k = num_groups;
+    while k > 0 {
+        let j = choice[i][k];
+        sizes.push(i - j);
+        i = j;
+        k -= 1;
+    }
+    sizes.reverse();
+    sizes
 }
 
 // Adding catch-up days to the reading plan
@@ -840,7 +1603,9 @@ fn adjust_days(titles_chapters_days: Vec<ChaptersDays>, bible_data: Vec<ChapterD
                   new_tcds[j].days += adj_days;
               }
 
-              num_days -= num_titles;
+              // Splitting an N-title day into N single-title days only
+              // consumes N-1 *extra* days (the day itself already existed).
+              num_days -= num_titles - 1;
           } else {
               // No more elements with multiple titles, break the loop
               break;
@@ -902,36 +1667,80 @@ fn adjust_days(titles_chapters_days: Vec<ChaptersDays>, bible_data: Vec<ChapterD
         remaining -= 1;
     }
 
-    // Any truly remaining unassigned days become evenly-distributed catch-up days.
-    let first_day = new_tcds.first().map_or(0, |first| first.days);
+    // Any truly remaining unassigned days become catch-up days, spread
+    // proportionally across the whole schedule rather than clustered together.
     let last_day = new_tcds.last().map_or(0, |last| last.days);
     let num_days = duration - last_day;
     if num_days > 0 {
-      let dur = last_day - first_day;
-      let days_between = (dur / (num_days + 1)) as usize;
-      let mut catchup_day_count = 1usize;
-
-      for i in 0..new_tcds.len() - 1 {
-          if catchup_day_count > num_days as usize { break; }
-          let current_titles = &new_tcds[i].titles;
-          let next_titles = &new_tcds[i + 1].titles;
-
-          if i > days_between * catchup_day_count && current_titles != next_titles {
-              insert_new_element(&mut new_tcds, i, "Catch-up day".to_string(), 0);
-              catchup_day_count += 1;
-          }
-      }
-  }
+        new_tcds = interleave_catchup_days(new_tcds, num_days);
+    }
 
   new_tcds
+}
+
+// Interleave `num_catchup` "Catch-up day" placeholders among `entries`
+// (already one per calendar day, in order), spreading them as evenly as
+// possible across the combined schedule and renumbering `.days` to be
+// sequential across the result.
+//
+// The previous approach inserted a catch-up day only at points where the
+// book title changed, spaced by a fixed index gap. But inserting one always
+// creates a fresh "title changed" boundary immediately after itself (a
+// Catch-up day next to whatever real reading follows), which re-satisfied
+// the insertion condition on the very next step — so instead of spreading
+// out, catch-up days cascaded into one long unbroken run. This proportional
+// interleave has no such self-triggering: it only ever compares each type's
+// share of days emitted so far against its target share of the whole.
+fn interleave_catchup_days(entries: Vec<ChaptersDays>, num_catchup: i32) -> Vec<ChaptersDays> {
+    if num_catchup <= 0 {
+        return entries;
+    }
+
+    let real_total = entries.len() as i64;
+    let catchup_total = num_catchup as i64;
+    let mut result = Vec::with_capacity((real_total + catchup_total) as usize);
+    let mut real_iter = entries.into_iter();
+    let mut real_emitted = 0i64;
+    let mut catchup_emitted = 0i64;
+    let mut day = 1i32;
+
+    while real_emitted < real_total || catchup_emitted < catchup_total {
+        // Emit whichever type is proportionally furthest behind its target
+        // share (real_emitted/real_total vs catchup_emitted/catchup_total),
+        // compared via cross-multiplication to avoid floating point.
+        let take_real = if real_emitted >= real_total {
+            false
+        } else if catchup_emitted >= catchup_total {
+            true
+        } else {
+            real_emitted * catchup_total <= catchup_emitted * real_total
+        };
+
+        if take_real {
+            let mut entry = real_iter.next().expect("real_emitted < real_total");
+            entry.days = day;
+            result.push(entry);
+            real_emitted += 1;
+        } else {
+            result.push(ChaptersDays { titles: vec!["Catch-up day".to_string()], chapters: 0, days: day });
+            catchup_emitted += 1;
+        }
+        day += 1;
+    }
+
+    result
 }
 
 // Helper function to insert a new element
 fn insert_new_element(new_tcds: &mut Vec<ChaptersDays>, i: usize, title: String, chapters: i32) {
   let new_element = ChaptersDays {
       titles: vec![title],
+      // Take over the day slot right after `i` — the entry that used to sit
+      // there shifts to the next day via the loop below. Using `+ 1` here
+      // (as if the new entry went *after* that day too) skipped a day
+      // number entirely and left both entries on the same day.
       chapters: chapters,
-      days: new_tcds[i + 1].days + 1,
+      days: new_tcds[i + 1].days,
   };
   new_tcds.insert(i + 1, new_element);
 
@@ -956,19 +1765,27 @@ fn get_daily_reading_lengths(adjusted_plan: Vec<ChaptersDays>, chapter_data: Vec
   for day in adjusted_plan {
       let mut total_length = 0;
 
-      for title in day.titles.clone() {
-          let start_chapter = if prev_title != title { 1 } else { prev_end_chapter + 1 };
-          let end_chapter = day.chapters;
+      // Catch-up days (chapters == 0) have no reading of their own and must
+      // not touch prev_title/prev_end_chapter — otherwise the next real day
+      // for a book that was already in progress looks like a fresh start
+      // (prev_title would be "Catch-up day", not the book's actual title),
+      // resetting its start chapter back to 1 and summing every chapter
+      // from the beginning of the book instead of just the new ones.
+      if day.chapters > 0 {
+          for title in day.titles.clone() {
+              let start_chapter = if prev_title != title { 1 } else { prev_end_chapter + 1 };
+              let end_chapter = day.chapters;
 
-          // Collect lengths
-          for chapter in start_chapter..=end_chapter {
-              if let Some(&length) = chapter_map.get(&(title.to_string(), chapter)) {
-                  total_length += length;
+              // Collect lengths
+              for chapter in start_chapter..=end_chapter {
+                  if let Some(&length) = chapter_map.get(&(title.to_string(), chapter)) {
+                      total_length += length;
+                  }
               }
-          }
 
-          prev_end_chapter = end_chapter;
-          prev_title = title.clone();
+              prev_end_chapter = end_chapter;
+              prev_title = title.clone();
+          }
       }
 
     result.push(DailyLength{ day: day.days, length: total_length});
@@ -1000,64 +1817,197 @@ fn get_day_dates(start_date: NaiveDate, end_date: NaiveDate, weekdays_to_skip: &
 }
 
 // Write the output file, with reading date, book(s) and chapter(s) (or 'Catch-up day' if all readings for that
-// date are catch-up days)
+// date are catch-up days). Each active reading track gets its own column, since combined_plan[i]
+// holds one entry per track for that day.
 // If length_flag: include daily reading lengths
 // If duration_flag: use day count rather than dates
+// If wpm is Some, the length column is estimated reading minutes instead of a raw word count
+// If weekday_flag: put the weekday in its own column, first (date-range mode only)
+// If header_flag: write a header row matching the columns actually present (optional weekday,
+// date/day, one column per track, optional word/minute count)
 fn write_to_file(
   filename: &str,
   combined_plan: Vec<Vec<ChaptersDays>>,
   combined_lengths: Vec<DailyLength>,
   length_flag: bool,
   day_dates: Vec<NaiveDate>,
+  wpm: Option<u32>,
+  weekday_flag: bool,
+  header_flag: bool,
 ) -> Result<(), Box<dyn Error>> {
-  let mut wtr = csv::WriterBuilder::new()
-      .quote_style(csv::QuoteStyle::Never)
-      .from_path(format!("{}.csv", filename))?;
+  // Default QuoteStyle::Necessary: any field containing a comma, quote, or
+  // newline (e.g. "Genesis, Exodus" for a multi-book day) is auto-quoted and
+  // escaped, so it can never be misread as extra columns.
+  let mut wtr = csv::WriterBuilder::new().from_path(format!("{}.csv", filename))?;
+
+  let has_weekday_column = weekday_flag && !day_dates.is_empty();
+  // Each track contributes one entry per day, so this is the number of
+  // "reading" columns the data rows will actually have.
+  let track_count = combined_plan.iter().map(|day| day.len()).max().unwrap_or(1).max(1);
+
+  if header_flag {
+      let mut header: Vec<String> = Vec::new();
+      if has_weekday_column {
+          header.push("Weekday".to_string());
+      }
+      header.push(if day_dates.is_empty() { "Day".to_string() } else { "Date".to_string() });
+      if track_count <= 1 {
+          header.push("Reading".to_string());
+      } else {
+          header.extend((1..=track_count).map(|t| format!("Track {}", t)));
+      }
+      if length_flag {
+          header.push(if wpm.is_some() { "Minutes".to_string() } else { "Words".to_string() });
+      }
+      wtr.write_record(&header)?;
+  }
 
   let mut prev_end_chapter = HashMap::new(); // Track the previous day's end chapter for each book
 
   for (i, day) in combined_plan.iter().enumerate() {
-      let date_or_day = if day_dates.is_empty() {
-          (i + 1).to_string()
+      let mut record: Vec<String> = Vec::new();
+
+      if day_dates.is_empty() {
+          record.push((i + 1).to_string());
+      } else if has_weekday_column {
+          record.push(day_dates[i].format("%a").to_string());
+          record.push(day_dates[i].format("%b %-d %Y").to_string());
       } else {
-          day_dates[i].format("%a, %b %-d, %Y").to_string()
-      };
+          record.push(day_dates[i].format("%a %b %-d %Y").to_string());
+      }
 
-      let books_and_chapters = day
-          .iter()
-          .map(|d| {
-              let start_chapter = {
-                  let raw = prev_end_chapter.get(&d.titles[0]).map_or(1, |&p| p + 1);
-                  // If raw start exceeds this day's end chapter the book is starting a new pass; reset to 1.
-                  if raw > d.chapters { 1 } else { raw }
-              };
+      for d in day.iter() {
+          let start_chapter = {
+              let raw = prev_end_chapter.get(&d.titles[0]).map_or(1, |&p| p + 1);
+              // If raw start exceeds this day's end chapter the book is starting a new pass; reset to 1.
+              if raw > d.chapters { 1 } else { raw }
+          };
 
-              prev_end_chapter.insert(d.titles[0].clone(), d.chapters); // Update the end chapter for the book
+          prev_end_chapter.insert(d.titles[0].clone(), d.chapters); // Update the end chapter for the book
 
-              if d.titles.len() > 1 {
-                  // Do not state the number of chapters if there are multiple books
-                  format!("\"{}\"", d.titles.join(", "))
-              } else if start_chapter == d.chapters {
-                  format!("\"{} {}\"", d.titles[0], d.chapters)
-              } else {
-                  format!("\"{} {}-{}\"", d.titles[0], start_chapter, d.chapters)
-              }
-          })
-          .collect::<Vec<String>>()
-          .join(",")
-          .replace("Catch-up day 1-0", "Catch-up day");
+          let entry = if d.titles.len() > 1 {
+              // Do not state the number of chapters if there are multiple books
+              d.titles.join(", ")
+          } else if start_chapter == d.chapters {
+              format!("{} {}", d.titles[0], d.chapters)
+          } else if d.chapters == 0 {
+              "Catch-up day".to_string()
+          } else {
+              format!("{} {}-{}", d.titles[0], start_chapter, d.chapters)
+          };
+
+          record.push(entry);
+      }
 
       if length_flag {
           let length = combined_lengths
               .iter()
               .find(|&l| l.day == (i + 1) as i32)
               .map_or(0, |l| l.length);
-          wtr.write_record(&[date_or_day, books_and_chapters, format!(" {}", length)])?;
-      } else {
-          wtr.write_record(&[date_or_day, books_and_chapters])?;
+          // The `length` field in the source data is actually a character
+          // count, not a word count. Approximate word count by dividing by
+          // the average English word length (5 characters).
+          let word_count = length as f64 / 5.0;
+          let value = match wpm {
+              Some(w) if w > 0 => (word_count / w as f64).round() as i32,
+              _ => word_count.round() as i32,
+          };
+          record.push(format!(" {}", value));
       }
+
+      wtr.write_record(&record)?;
   }
 
   wtr.flush()?;
   Ok(())
+}
+
+// Escape text per RFC 5545 (backslash, comma, semicolon, newline).
+fn escape_ics_text(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace(';', "\\;")
+        .replace(',', "\\,")
+        .replace('\n', "\\n")
+}
+
+// Write an iCalendar (.ics) file with one all-day event per reading day, so
+// the plan can be imported directly into Google Calendar or iPhone/Apple
+// Calendar. Only meaningful when day_dates is non-empty (date-range mode).
+fn write_ics_file(
+    filename: &str,
+    combined_plan: &[Vec<ChaptersDays>],
+    combined_lengths: &[DailyLength],
+    length_flag: bool,
+    day_dates: &[NaiveDate],
+    wpm: Option<u32>,
+) -> Result<(), Box<dyn Error>> {
+    let mut ics = String::new();
+    let mut line = |s: &str| { ics.push_str(s); ics.push_str("\r\n"); };
+
+    line("BEGIN:VCALENDAR");
+    line("VERSION:2.0");
+    line("PRODID:-//Better Bible Planner//EN");
+    line("CALSCALE:GREGORIAN");
+
+    let dtstamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut prev_end_chapter: HashMap<String, i32> = HashMap::new();
+
+    for (i, day) in combined_plan.iter().enumerate() {
+        if i >= day_dates.len() { break; }
+        let date = day_dates[i];
+
+        let mut summary = day
+            .iter()
+            .map(|d| {
+                let start_chapter = {
+                    let raw = prev_end_chapter.get(&d.titles[0]).map_or(1, |&p| p + 1);
+                    if raw > d.chapters { 1 } else { raw }
+                };
+                prev_end_chapter.insert(d.titles[0].clone(), d.chapters);
+
+                if d.titles.len() > 1 {
+                    d.titles.join(", ")
+                } else if start_chapter == d.chapters {
+                    format!("{} {}", d.titles[0], d.chapters)
+                } else {
+                    format!("{} {}-{}", d.titles[0], start_chapter, d.chapters)
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ")
+            .replace("Catch-up day 1-0", "Catch-up day");
+
+        if length_flag {
+            let length = combined_lengths
+                .iter()
+                .find(|&l| l.day == (i + 1) as i32)
+                .map_or(0, |l| l.length);
+            // The `length` field in the source data is actually a character
+            // count, not a word count. Approximate word count by dividing by
+            // the average English word length (5 characters).
+            let word_count = length as f64 / 5.0;
+            let value = match wpm {
+                Some(w) if w > 0 => (word_count / w as f64).round() as i32,
+                _ => word_count.round() as i32,
+            };
+            let unit = if wpm.is_some() { "min" } else { "words" };
+            summary = format!("{} ({} {})", summary, value, unit);
+        }
+
+        let dtstart = date.format("%Y%m%d").to_string();
+        let dtend = (date + chrono::Duration::days(1)).format("%Y%m%d").to_string();
+
+        line("BEGIN:VEVENT");
+        line(&format!("UID:bbp-{}-{}@betterbibleplanner", dtstart, i));
+        line(&format!("DTSTAMP:{}", dtstamp));
+        line(&format!("DTSTART;VALUE=DATE:{}", dtstart));
+        line(&format!("DTEND;VALUE=DATE:{}", dtend));
+        line(&format!("SUMMARY:{}", escape_ics_text(&summary)));
+        line("END:VEVENT");
+    }
+
+    line("END:VCALENDAR");
+
+    std::fs::write(format!("{}.ics", filename), ics)?;
+    Ok(())
 }
