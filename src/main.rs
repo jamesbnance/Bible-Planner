@@ -2,7 +2,7 @@ use chrono::{NaiveDate, Datelike, Utc};
 use serde::Deserialize;
 use std::fs::File;
 use std::error::Error;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use csv::ReaderBuilder;
 use eframe::egui;
 
@@ -337,6 +337,10 @@ struct BiblePlannerApp {
     output_dir: String,
     #[serde(default)]
     export_ics: bool,
+    #[serde(default)]
+    extra_catchup_days: i32,
+    #[serde(default)]
+    catchup_after_long_books: bool,
 
     // Session-only state — not persisted
     #[serde(skip)]
@@ -395,6 +399,8 @@ impl Default for BiblePlannerApp {
             reading_speed_wpm: default_reading_speed_wpm(),
             output_dir: default_output_dir(),
             export_ics: false,
+            extra_catchup_days: 0,
+            catchup_after_long_books: false,
             custom_filename: String::new(),
             last_output: None,
             last_ics_output: None,
@@ -602,6 +608,16 @@ impl BiblePlannerApp {
                         self.show_reading_length_dialog = true;
                     }
                 });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Extra catch-up days:");
+                    ui.add(egui::DragValue::new(&mut self.extra_catchup_days).range(0..=3650));
+                });
+                ui.label(
+                    egui::RichText::new("Spread evenly across the schedule; shortens the reading, not the plan.").weak(),
+                );
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.catchup_after_long_books, "Add a catch-up day after longer books");
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("Output folder:");
@@ -1058,8 +1074,18 @@ impl BiblePlannerApp {
             (self.duration, Vec::new())
         };
 
+        if self.extra_catchup_days >= duration {
+            self.set_status("Extra catch-up days must be less than the plan's total duration.", true);
+            return;
+        }
+
         if !skip_catchup_check {
-            if let Some(message) = self.catchup_warning(&book_indexes, duration) {
+            // Deliberately-requested extra catch-up days shouldn't count
+            // against the "far fewer chapters than days" warning — that
+            // warning is about an unintentional mismatch, not a choice the
+            // user already made.
+            let content_duration = (duration - self.extra_catchup_days).max(1);
+            if let Some(message) = self.catchup_warning(&book_indexes, content_duration) {
                 self.pending_catchup_warning = Some(message);
                 return;
             }
@@ -1095,9 +1121,13 @@ impl BiblePlannerApp {
                 Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
             };
 
-            let tcd  = get_books_in_days(bible_data.clone(), duration);
-            let tcd2 = get_chapters_days_by_length(chapter_data.clone(), tcd, duration);
-            let plan = adjust_days(tcd2, bible_data, duration);
+            let plan = build_track_plan(
+                bible_data,
+                chapter_data.clone(),
+                duration,
+                self.extra_catchup_days,
+                self.catchup_after_long_books,
+            );
 
             for (i, day) in plan.iter().enumerate() {
                 if combined_plan.len() <= i { combined_plan.push(Vec::new()); }
@@ -1748,6 +1778,89 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDays>, i: usize, title: String,
   for j in i + 2..new_tcds.len() {
       new_tcds[j].days += 1;
   }
+}
+
+// A book that would take at least this many days to read on its own counts
+// as "long" for the optional catch-up-day-after-long-books feature.
+const LONG_BOOK_DAY_THRESHOLD: i32 = 5;
+
+// Build one track's day-by-day plan, optionally reserving some days as
+// catch-up days — either a user-requested count spread evenly across the
+// whole schedule, or one placed right after each completed run of a book
+// long enough to cross LONG_BOOK_DAY_THRESHOLD. Both kinds of extra
+// catch-up day displace reading days rather than extending the plan: the
+// real content is squeezed into `duration` minus however many catch-up days
+// are needed, so the final result is still exactly `duration` days long.
+fn build_track_plan(
+    bible_data: Vec<ChapterData>,
+    chapter_data: Vec<ChapterData>,
+    duration: i32,
+    extra_catchup_days: i32,
+    catchup_after_long_books: bool,
+) -> Vec<ChaptersDays> {
+    let extra_catchup_days = extra_catchup_days.max(0);
+
+    // Identify which book titles are long enough to warrant a catch-up day
+    // after each finished run, using a first pass against the full
+    // duration — shaving off a handful of days for catch-up essentially
+    // never changes which books cross the threshold.
+    let long_book_titles: HashSet<String> = if catchup_after_long_books {
+        get_books_in_days(bible_data.clone(), duration)
+            .iter()
+            .filter(|d| d.titles.len() == 1 && d.days >= LONG_BOOK_DAY_THRESHOLD)
+            .map(|d| d.titles[0].clone())
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    let probe_transitions = if catchup_after_long_books {
+        let probe = get_books_in_days(bible_data.clone(), duration);
+        long_book_transitions(&probe, &long_book_titles).len() as i32
+    } else {
+        0
+    };
+
+    let content_duration = (duration - extra_catchup_days - probe_transitions).max(1);
+
+    let tcd = get_books_in_days(bible_data.clone(), content_duration);
+    let tcd2 = get_chapters_days_by_length(chapter_data, tcd, content_duration);
+    let mut plan = adjust_days(tcd2, bible_data, content_duration);
+
+    if !long_book_titles.is_empty() {
+        for &i in long_book_transitions(&plan, &long_book_titles).iter().rev() {
+            insert_new_element(&mut plan, i, "Catch-up day".to_string(), 0);
+        }
+    }
+
+    // In the common case this shortfall is exactly `extra_catchup_days`
+    // (content_duration plus however many long-book catch-up days actually
+    // landed sums back to `duration` minus the requested extra days). It
+    // can drift slightly if the actual number of long-book transitions in
+    // the final plan differs from the probe's estimate — e.g. splitting
+    // changes exactly where one book's run ends relative to the next — so
+    // this recomputes from the real plan length rather than assuming the
+    // estimate held, keeping the exact-duration guarantee unconditional.
+    let shortfall = duration - plan.len() as i32;
+    if shortfall > 0 {
+        plan = interleave_catchup_days(plan, shortfall);
+    }
+
+    plan
+}
+
+// Index of every entry in `entries` that's the last day of a run of a
+// single title in `titles`, i.e. a point where a catch-up day belongs right
+// after. Excludes the very end of `entries` — there's nothing left to catch
+// up before.
+fn long_book_transitions(entries: &[ChaptersDays], titles: &HashSet<String>) -> Vec<usize> {
+    entries.iter().enumerate()
+        .filter(|(i, day)| {
+            day.titles.len() == 1
+                && titles.contains(&day.titles[0])
+                && entries.get(i + 1).is_some_and(|next| next.titles != day.titles)
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 fn get_daily_reading_lengths(adjusted_plan: Vec<ChaptersDays>, chapter_data: Vec<ChapterData>) -> Vec<DailyLength> {
