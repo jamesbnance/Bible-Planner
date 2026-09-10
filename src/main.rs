@@ -1312,7 +1312,13 @@ fn get_books_in_days(bible_data: Vec<ChapterData>, duration: i32) -> Vec<Chapter
   }
 
   let shares: Vec<f64> = groups.iter().map(|&(_, _, days)| days).collect();
-  let rounded_days = apportion_days(&shares, effective_duration);
+  // Groups combining multiple small books must stay on exactly one shared
+  // day (get_chapters_days_by_length assumes this) — cap those at 1 so the
+  // largest-remainder top-up below can never push one to 2+ days.
+  let caps: Vec<i32> = groups.iter()
+      .map(|(titles, _, _)| if titles.len() > 1 { 1 } else { i32::MAX })
+      .collect();
+  let rounded_days = apportion_days(&shares, &caps, effective_duration);
 
   groups.into_iter().zip(rounded_days)
       .map(|((titles, chapters, _), days)| ChaptersDays { titles, chapters, days })
@@ -1328,19 +1334,21 @@ fn get_books_in_days(bible_data: Vec<ChapterData>, duration: i32) -> Vec<Chapter
 // below) `total` with nothing to correct it afterward.
 //
 // This uses the "largest remainder" apportionment method instead: take the
-// floor of each share (but never below 1), then hand out the still-missing
-// days one at a time to the shares with the largest fractional remainder —
-// the standard way to round a set of shares to whole numbers that add up to
-// an exact target. In the rare case where the per-share minimum of 1 alone
-// already exceeds `total` (more groups than available days), a day is taken
-// back from the smallest shares (down to their own minimum of 1) instead.
-fn apportion_days(shares: &[f64], total: i32) -> Vec<i32> {
+// floor of each share (but never below 1, and never above that share's cap
+// — used to keep a group of combined small books on exactly one shared
+// day), then hand out the still-missing days one at a time to the shares
+// with the largest fractional remainder — the standard way to round a set
+// of shares to whole numbers that add up to an exact target. In the rare
+// case where the per-share minimum of 1 alone already exceeds `total`
+// (more groups than available days), a day is taken back from the smallest
+// shares (down to their own minimum of 1) instead.
+fn apportion_days(shares: &[f64], caps: &[i32], total: i32) -> Vec<i32> {
     let n = shares.len();
     if n == 0 {
         return Vec::new();
     }
 
-    let mut days: Vec<i32> = shares.iter().map(|&s| (s.floor() as i32).max(1)).collect();
+    let mut days: Vec<i32> = shares.iter().zip(caps).map(|(&s, &cap)| (s.floor() as i32).max(1).min(cap)).collect();
     let remainder: Vec<f64> = shares.iter().zip(&days).map(|(&s, &d)| s - d as f64).collect();
     let allocated: i32 = days.iter().sum();
     let deficit = total - allocated;
@@ -1348,8 +1356,26 @@ fn apportion_days(shares: &[f64], total: i32) -> Vec<i32> {
     if deficit > 0 {
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by(|&a, &b| remainder[b].partial_cmp(&remainder[a]).unwrap());
-        for &i in order.iter().take(deficit as usize) {
-            days[i] += 1;
+
+        // Sweep by remainder priority, skipping any share already at its
+        // cap; repeat until the deficit is used up or nothing can absorb
+        // more (every share capped).
+        let mut remaining = deficit;
+        while remaining > 0 {
+            let mut progressed = false;
+            for &i in &order {
+                if remaining == 0 {
+                    break;
+                }
+                if days[i] < caps[i] {
+                    days[i] += 1;
+                    remaining -= 1;
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                break;
+            }
         }
     } else if deficit < 0 {
         let mut order: Vec<usize> = (0..n).collect();
@@ -1799,6 +1825,7 @@ fn build_track_plan(
     catchup_after_long_books: bool,
 ) -> Vec<ChaptersDays> {
     let extra_catchup_days = extra_catchup_days.max(0);
+    let target_after_extra = (duration - extra_catchup_days).max(1);
 
     // Identify which book titles are long enough to warrant a catch-up day
     // after each finished run, using a first pass against the full
@@ -1813,36 +1840,52 @@ fn build_track_plan(
     } else {
         HashSet::new()
     };
-    let probe_transitions = if catchup_after_long_books {
-        let probe = get_books_in_days(bible_data.clone(), duration);
-        long_book_transitions(&probe, &long_book_titles).len() as i32
-    } else {
-        0
-    };
 
-    let content_duration = (duration - extra_catchup_days - probe_transitions).max(1);
+    // How many days to spend on real content, leaving the rest for
+    // long-book catch-up days. Guessing this from a single probe pass isn't
+    // exact — shrinking the duration to make room for catch-up days can
+    // itself shift exactly where a book's run ends relative to the next, in
+    // or out of counting as a transition — so this re-measures the actual
+    // count each time and nudges the guess until it converges, rather than
+    // trusting the first estimate.
+    let mut content_duration = target_after_extra;
+    let mut plan = Vec::new();
+    for _ in 0..6 {
+        let tcd = get_books_in_days(bible_data.clone(), content_duration);
+        let tcd2 = get_chapters_days_by_length(chapter_data.clone(), tcd, content_duration);
+        let mut candidate = adjust_days(tcd2, bible_data.clone(), content_duration);
 
-    let tcd = get_books_in_days(bible_data.clone(), content_duration);
-    let tcd2 = get_chapters_days_by_length(chapter_data, tcd, content_duration);
-    let mut plan = adjust_days(tcd2, bible_data, content_duration);
-
-    if !long_book_titles.is_empty() {
-        for &i in long_book_transitions(&plan, &long_book_titles).iter().rev() {
-            insert_new_element(&mut plan, i, "Catch-up day".to_string(), 0);
+        if !long_book_titles.is_empty() {
+            for &i in long_book_transitions(&candidate, &long_book_titles).iter().rev() {
+                insert_new_element(&mut candidate, i, "Catch-up day".to_string(), 0);
+            }
         }
+
+        let overshoot = candidate.len() as i32 - target_after_extra;
+        plan = candidate;
+        if overshoot == 0 || content_duration <= 1 {
+            break;
+        }
+        content_duration = (content_duration - overshoot).max(1);
     }
 
-    // In the common case this shortfall is exactly `extra_catchup_days`
-    // (content_duration plus however many long-book catch-up days actually
-    // landed sums back to `duration` minus the requested extra days). It
-    // can drift slightly if the actual number of long-book transitions in
-    // the final plan differs from the probe's estimate — e.g. splitting
-    // changes exactly where one book's run ends relative to the next — so
-    // this recomputes from the real plan length rather than assuming the
-    // estimate held, keeping the exact-duration guarantee unconditional.
+    // Unconditional safety net: whatever the loop above converged to (or
+    // didn't, within its iteration budget), the result must still end up at
+    // exactly `duration` days — pad any shortfall, and if it's somehow
+    // still over, drop trailing catch-up placeholders (never real content)
+    // before falling back to a hard truncate as an absolute last resort.
     let shortfall = duration - plan.len() as i32;
     if shortfall > 0 {
         plan = interleave_catchup_days(plan, shortfall);
+    } else if shortfall < 0 {
+        let mut to_remove = -shortfall;
+        while to_remove > 0 && plan.last().is_some_and(|d| d.chapters == 0) {
+            plan.pop();
+            to_remove -= 1;
+        }
+        if plan.len() as i32 > duration {
+            plan.truncate(duration.max(0) as usize);
+        }
     }
 
     plan
