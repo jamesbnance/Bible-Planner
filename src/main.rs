@@ -208,6 +208,48 @@ fn outline_button(ui: &mut egui::Ui, label: &str, base: egui::Color32, hover: eg
     .inner
 }
 
+// A checkbox whose checked state reads at a glance via a solid accent fill,
+// matching the book quick-select buttons — the default checkbox only draws a
+// thin checkmark line, which is easy to miss.
+fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui::Response {
+    let dark_mode = ui.visuals().dark_mode;
+    let is_checked = *checked;
+    ui.horizontal(|ui| {
+        // The box and label are drawn as two separate widgets rather than one
+        // `ui.checkbox()` call: egui derives both the checkmark color and the
+        // label's text color from the same style field, so recoloring the
+        // checkmark to white for contrast against the accent fill would also
+        // turn the label text white (invisible in light mode).
+        let mut response = ui.scope(|ui| {
+            if is_checked {
+                let accent = if dark_mode {
+                    ui.visuals().selection.bg_fill
+                } else {
+                    // Light theme's default selection color (pale blue) has poor
+                    // contrast; use the same darker blue as the quick-select buttons.
+                    egui::Color32::from_rgb(0, 92, 128)
+                };
+                let widgets = &mut ui.style_mut().visuals.widgets;
+                for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+                    state.bg_fill = accent;
+                    state.bg_stroke = egui::Stroke::new(1.0, accent);
+                    state.fg_stroke = egui::Stroke::new(2.5, egui::Color32::WHITE);
+                }
+            }
+            ui.add(egui::Checkbox::without_text(&mut *checked))
+        })
+        .inner;
+
+        let text_response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        if text_response.clicked() {
+            *checked = !*checked;
+            response.mark_changed();
+        }
+        response.union(text_response)
+    })
+    .inner
+}
+
 // Draw a solid-colored button whose fill responds to hover/press, since
 // `Button::fill()` alone paints a flat color with no interaction feedback.
 fn colored_button(ui: &mut egui::Ui, label: &str, base: egui::Color32, min_size: egui::Vec2) -> egui::Response {
@@ -246,6 +288,10 @@ fn section_frame<R>(
         .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(16, 14))
         .show(ui, |ui| {
+            // Force the card to span the full available width even when its
+            // contents (e.g. Schedule, Options) wouldn't otherwise need it,
+            // so all section cards line up with the same right edge.
+            ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(icon).size(17.0));
                 ui.label(egui::RichText::new(title).size(17.0).strong().color(ui.visuals().strong_text_color()));
@@ -360,7 +406,11 @@ struct BiblePlannerApp {
     #[serde(skip)]
     show_settings: bool,
     #[serde(skip)]
-    show_reading_length_dialog: bool,
+    show_reading_plan_dialog: bool,
+    #[serde(skip)]
+    show_catchup_dialog: bool,
+    #[serde(skip)]
+    show_output_dialog: bool,
     #[serde(skip)]
     applied_ui_scale: Option<f32>,
     // Set when generation is paused to ask the user how to handle a
@@ -409,7 +459,9 @@ impl Default for BiblePlannerApp {
             status_shown_at: None,
             confirming_reset: false,
             show_settings: false,
-            show_reading_length_dialog: false,
+            show_reading_plan_dialog: false,
+            show_catchup_dialog: false,
+            show_output_dialog: false,
             applied_ui_scale: None,
             pending_catchup_warning: None,
         }
@@ -455,7 +507,9 @@ impl eframe::App for BiblePlannerApp {
         let ctx = ui.ctx().clone();
         self.show_status_toast(&ctx);
         self.show_settings_dialog(&ctx);
-        self.show_reading_length_dialog(&ctx);
+        self.show_reading_plan_dialog(&ctx);
+        self.show_catchup_dialog(&ctx);
+        self.show_output_dialog(&ctx);
         self.show_catchup_warning_dialog(&ctx);
     }
 }
@@ -464,6 +518,19 @@ impl BiblePlannerApp {
     fn panel_contents(&mut self, ui: &mut egui::Ui) {
         // More vertical breathing room between widgets
         ui.spacing_mut().item_spacing.y = 6.0;
+
+        // The default scrollbar style is "floating": it overlays the content
+        // rather than reserving its own space, so it sits right on top of
+        // (and slightly obscures) whatever is at the right edge — the
+        // settings gear, the cards, and the Generate button. A solid
+        // scrollbar always reserves a lane for itself, so content shifts
+        // left to make room instead of being covered.
+        let mut scroll_style = egui::style::ScrollStyle::solid();
+        scroll_style.bar_width = 12.0;
+        // Sample the foreground (text) color instead of the pale widget
+        // background fill, so the bar reads as clearly darker/higher-contrast.
+        scroll_style.foreground_color = true;
+        ui.style_mut().spacing.scroll = scroll_style;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Bold, cool-toned title with a colored accent rule underneath,
@@ -598,104 +665,44 @@ impl BiblePlannerApp {
             ui.add_space(10.0);
 
             // ── Options ────────────────────────────────────────────────────
+            // Each row used to hold its controls inline, which made the card
+            // sprawl; now each just opens a focused dialog (see
+            // show_reading_plan_dialog/show_catchup_dialog/show_output_dialog).
             section_frame(ui, "🔧", "Options", self.dark_mode, |ui| {
-                ui.horizontal(|ui| {
-                    let response = ui.checkbox(&mut self.include_length, "Include daily reading length in output");
-                    if response.changed() && self.include_length {
-                        self.show_reading_length_dialog = true;
-                    }
-                    if self.include_length && ui.small_button("Configure...").clicked() {
-                        self.show_reading_length_dialog = true;
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Extra catch-up days:");
-                    ui.add(egui::DragValue::new(&mut self.extra_catchup_days).range(0..=3650));
-                });
-                ui.label(
-                    egui::RichText::new("Spread evenly across the schedule; shortens the reading, not the plan.").weak(),
-                );
-                ui.add_space(4.0);
-                ui.checkbox(&mut self.catchup_after_long_books, "Add a catch-up day after longer books");
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Output folder:");
-                    ui.label(egui::RichText::new(&self.output_dir).weak());
-                    if ui.small_button("Browse...").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new()
-                            .set_directory(&self.output_dir)
-                            .pick_folder()
-                        {
-                            self.output_dir = dir.to_string_lossy().to_string();
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Output filename:");
-                    // TextEdit has no visible border at rest by default (only on
-                    // hover/focus), so give it a constant one here.
-                    let border = ui.visuals().widgets.noninteractive.bg_stroke;
-                    let corner_radius = ui.visuals().widgets.inactive.corner_radius;
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.custom_filename)
-                            .hint_text("leave blank for auto-generated name")
-                            .frame(
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
-                                    .stroke(border)
-                                    .corner_radius(corner_radius),
-                            ),
-                    );
-                });
-                ui.label(egui::RichText::new(format!(".csv is added automatically; saved under {}/", self.output_dir)).weak());
-                ui.add_space(4.0);
-                ui.add_enabled_ui(self.use_date_range, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.export_ics, "Also export a calendar file (.ics) for Google/Apple Calendar");
-                        if self.export_ics {
-                            let info = ui.small_button("ℹ").on_hover_text("How to use the calendar file");
-                            egui::Popup::from_toggle_button_response(&info).show(|ui| {
-                                ui.set_max_width(320.0);
-                                ui.label(egui::RichText::new("Using the calendar file").strong());
-                                ui.add_space(4.0);
-                                ui.label("The .ics file has one all-day event per reading day. Import it into your calendar app:");
-                                ui.add_space(4.0);
-                                ui.label("• Google Calendar (web): Settings → Import & export → Import, then choose the file.");
-                                ui.label("• Apple Calendar (Mac): File → Import…, then choose the file.");
-                                ui.label("• iPhone/iPad: AirDrop or email yourself the file, then tap it to add the events.");
-                            });
-                        }
-                    });
-                });
-                if !self.use_date_range {
-                    ui.label(egui::RichText::new("Calendar export needs a date range, not a fixed duration.").weak());
+                let row_size = egui::vec2(ui.available_width(), 32.0);
+                if ui.add_sized(row_size, egui::Button::new("Configure Bible Reading Plan...")).clicked() {
+                    self.show_reading_plan_dialog = true;
+                }
+                ui.add_space(6.0);
+                if ui.add_sized(row_size, egui::Button::new("Configure Catch-up Days...")).clicked() {
+                    self.show_catchup_dialog = true;
+                }
+                ui.add_space(6.0);
+                if ui.add_sized(row_size, egui::Button::new("Configure Output...")).clicked() {
+                    self.show_output_dialog = true;
                 }
             });
 
             ui.add_space(14.0);
 
-            // ── Generate / Close buttons ──────────────────────────────────
-            // Darker green reads well against light mode's white panel; a
-            // brighter green stays visible against dark mode's near-black one.
-            let generate_fill = if self.dark_mode {
-                egui::Color32::from_rgb(67, 160, 71)
-            } else {
-                egui::Color32::from_rgb(46, 125, 50)
-            };
-            let close_fill = if self.dark_mode {
-                egui::Color32::from_rgb(198, 40, 40)
-            } else {
-                egui::Color32::from_rgb(178, 34, 34)
-            };
+            // ── Generate button ────────────────────────────────────────────
+            // Same saturation/brightness as the app's blue accent (the
+            // checked-checkbox/quick-select fill, rgb(0, 92, 128)) — only the
+            // hue changes — so the green reads as part of the same palette
+            // instead of a mismatched, separately-chosen color. Also used
+            // as-is in both themes, same as that blue accent.
+            let generate_fill = egui::Color32::from_rgb(0, 128, 43);
             let button_size = egui::vec2(180.0, 40.0);
 
+            // Open Output File shares Generate Plan's row (to its left) so
+            // it's visible right where the user is already looking, rather
+            // than a separate row further down that's easy to miss.
+            let open_fill = egui::Color32::from_rgb(0, 92, 128);
+            let last_output = self.last_output.clone();
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), button_size.y),
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    // Added first so right_to_left places it at the right edge.
                     if colored_button(ui, "Generate Plan", generate_fill, button_size).clicked() {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             self.generate_plan();
@@ -704,26 +711,26 @@ impl BiblePlannerApp {
                             self.set_status("Plan generation failed — the settings caused an internal error. Try a different date range or book selection.", true);
                         }
                     }
-                    ui.add_space(8.0);
-                    if colored_button(ui, "Close", close_fill, button_size).clicked() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    if let Some(path) = &last_output {
+                        ui.add_space(10.0);
+                        if colored_button(ui, "📂 Open Output File", open_fill, button_size).clicked() {
+                            open_file(path);
+                        }
                     }
                 },
             );
 
             // Status is shown as a centered toast (see show_status_toast) rather than inline here.
-            ui.horizontal(|ui| {
-                if let Some(path) = &self.last_output.clone() {
-                    if ui.button("Open output file").clicked() {
+            // The toast itself (shown immediately, no scrolling needed) also
+            // offers this same "open" action right after a successful generation.
+            if let Some(path) = &self.last_ics_output.clone() {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if colored_button(ui, "📅 Open Calendar File", open_fill, egui::vec2(210.0, 36.0)).clicked() {
                         open_file(path);
                     }
-                }
-                if let Some(path) = &self.last_ics_output.clone() {
-                    if ui.button("Open calendar file").clicked() {
-                        open_file(path);
-                    }
-                }
-            });
+                });
+            }
         });
     }
 }
@@ -753,7 +760,12 @@ impl BiblePlannerApp {
 
         let message = self.status.clone();
         let is_error = self.status_is_error;
+        // Surface the "open" action here too, right when the toast appears —
+        // no scrolling needed — since the standalone Open Output File button
+        // further down the form is easy to miss.
+        let output_path = if is_error { None } else { self.last_output.clone() };
         let mut dismissed = false;
+        let mut open_requested = false;
 
         egui::Area::new(egui::Id::new("status_toast"))
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -775,18 +787,37 @@ impl BiblePlannerApp {
                     .corner_radius(6.0)
                     .inner_margin(egui::Margin::symmetric(18, 14))
                     .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&message).color(text_color).strong(),
-                            )
-                            .sense(egui::Sense::click()),
-                        )
+                        ui.vertical_centered(|ui| {
+                            let label_response = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&message).color(text_color).strong(),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            if output_path.is_some() {
+                                ui.add_space(8.0);
+                                if outline_button(ui, "📂 Open Output File", egui::Color32::WHITE, egui::Color32::from_gray(210))
+                                    .clicked()
+                                {
+                                    open_requested = true;
+                                }
+                            }
+                            label_response
+                        })
+                        .inner
                     })
                     .inner;
                 if response.clicked() {
                     dismissed = true;
                 }
             });
+
+        if open_requested {
+            if let Some(path) = &output_path {
+                open_file(path);
+            }
+            dismissed = true;
+        }
 
         if dismissed {
             self.status.clear();
@@ -811,7 +842,7 @@ impl BiblePlannerApp {
             ui.set_min_width(320.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
-                egui::vec2(320.0, 24.0),
+                egui::vec2(ui.available_width(), 24.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     ui.heading("⚙ Settings");
@@ -846,16 +877,6 @@ impl BiblePlannerApp {
             ui.separator();
 
             ui.add_space(8.0);
-            ui.checkbox(&mut self.include_weekday_column, "Include weekday as its own column in output");
-            ui.add_space(8.0);
-            ui.separator();
-
-            ui.add_space(8.0);
-            ui.checkbox(&mut self.include_header, "Include column header row in output");
-            ui.add_space(8.0);
-            ui.separator();
-
-            ui.add_space(8.0);
             if !self.confirming_reset {
                 let gray = egui::Color32::from_gray(130);
                 let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
@@ -884,10 +905,11 @@ impl BiblePlannerApp {
         }
     }
 
-    // Reading-length dialog, shown as a modal when "Include daily reading
-    // length in output" is first checked (or reopened via "Configure...").
-    fn show_reading_length_dialog(&mut self, ctx: &egui::Context) {
-        if !self.show_reading_length_dialog {
+    // Bible Reading Plan dialog: how the daily reading length is reported
+    // (also holds the output's weekday/header columns, moved out of Settings
+    // since they're about the same generated output, not app-wide prefs).
+    fn show_reading_plan_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_reading_plan_dialog {
             return;
         }
 
@@ -895,14 +917,84 @@ impl BiblePlannerApp {
 
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
-        let modal = egui::Modal::new(egui::Id::new("reading_length_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(320.0);
+        let modal = egui::Modal::new(egui::Id::new("reading_plan_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_min_width(340.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
-                egui::vec2(320.0, 24.0),
+                egui::vec2(ui.available_width(), 24.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.heading("Reading Length");
+                    ui.heading("📏 Bible Reading Plan");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("X").clicked() {
+                            close = true;
+                        }
+                    });
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            contrast_checkbox(ui, &mut self.include_length, "Include daily reading length in output");
+            if self.include_length {
+                ui.add_space(8.0);
+                ui.indent("reading_length_fields", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Reading length shown as:");
+                        ui.radio_value(&mut self.use_reading_minutes, false, "Word count");
+                        ui.radio_value(&mut self.use_reading_minutes, true, "Minutes");
+                    });
+                    if self.use_reading_minutes {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Reading speed:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.reading_speed_wpm)
+                                    .range(50..=600)
+                                    .suffix(" words/min"),
+                            );
+                        });
+                    }
+                });
+            }
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            contrast_checkbox(ui, &mut self.include_weekday_column, "Include weekday as its own column in output");
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            contrast_checkbox(ui, &mut self.include_header, "Include column header row in output");
+            ui.add_space(8.0);
+        });
+
+        if close || modal.should_close() {
+            self.show_reading_plan_dialog = false;
+        }
+    }
+
+    // Catch-up Days dialog: how many extra days to add and whether long
+    // books automatically get one, both previously inline in Options.
+    fn show_catchup_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_catchup_dialog {
+            return;
+        }
+
+        let mut close = false;
+
+        let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
+        let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
+        let modal = egui::Modal::new(egui::Id::new("catchup_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_min_width(340.0);
+            ui.add_space(8.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 24.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.heading("⏱ Catch-up Days");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("X").clicked() {
                             close = true;
@@ -915,26 +1007,119 @@ impl BiblePlannerApp {
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label("Reading length shown as:");
-                ui.radio_value(&mut self.use_reading_minutes, false, "Word count");
-                ui.radio_value(&mut self.use_reading_minutes, true, "Minutes");
+                ui.label("Extra catch-up days:");
+                ui.add(egui::DragValue::new(&mut self.extra_catchup_days).range(0..=3650));
             });
-            if self.use_reading_minutes {
-                ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Spread evenly across the schedule; shortens the reading, not the plan.").weak(),
+            );
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            contrast_checkbox(ui, &mut self.catchup_after_long_books, "Add a catch-up day after longer books");
+            ui.add_space(8.0);
+        });
+
+        if close || modal.should_close() {
+            self.show_catchup_dialog = false;
+        }
+    }
+
+    // Output dialog: destination folder/filename and the optional calendar
+    // (.ics) export, all previously inline in Options.
+    fn show_output_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_output_dialog {
+            return;
+        }
+
+        let mut close = false;
+
+        let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
+        let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
+        let modal = egui::Modal::new(egui::Id::new("output_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_min_width(360.0);
+            ui.add_space(8.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 24.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.heading("💾 Output");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("X").clicked() {
+                            close = true;
+                        }
+                    });
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label("Output folder:");
+                ui.label(egui::RichText::new(&self.output_dir).weak());
+                if ui.small_button("Browse...").clicked() {
+                    if let Some(dir) = rfd::FileDialog::new()
+                        .set_directory(&self.output_dir)
+                        .pick_folder()
+                    {
+                        self.output_dir = dir.to_string_lossy().to_string();
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label("Output filename:");
+                // TextEdit has no visible border at rest by default (only on
+                // hover/focus), so give it a constant one here.
+                let border = ui.visuals().widgets.noninteractive.bg_stroke;
+                let corner_radius = ui.visuals().widgets.inactive.corner_radius;
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.custom_filename)
+                        .hint_text("leave blank for auto-generated name")
+                        .frame(
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin::symmetric(4, 2))
+                                .stroke(border)
+                                .corner_radius(corner_radius),
+                        ),
+                );
+            });
+            ui.label(egui::RichText::new(format!(".csv is added automatically; saved under {}/", self.output_dir)).weak());
+            ui.add_space(8.0);
+            ui.separator();
+
+            ui.add_space(8.0);
+            ui.add_enabled_ui(self.use_date_range, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Reading speed:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.reading_speed_wpm)
-                            .range(50..=600)
-                            .suffix(" words/min"),
-                    );
+                    contrast_checkbox(ui, &mut self.export_ics, "Also export a calendar file (.ics) for Google/Apple Calendar");
+                    if self.export_ics {
+                        let info = ui.small_button("ℹ").on_hover_text("How to use the calendar file");
+                        egui::Popup::from_toggle_button_response(&info).show(|ui| {
+                            ui.set_max_width(320.0);
+                            ui.label(egui::RichText::new("Using the calendar file").strong());
+                            ui.add_space(4.0);
+                            ui.label("The .ics file has one all-day event per reading day. Import it into your calendar app:");
+                            ui.add_space(4.0);
+                            ui.label("• Google Calendar (web): Settings → Import & export → Import, then choose the file.");
+                            ui.label("• Apple Calendar (Mac): File → Import…, then choose the file.");
+                            ui.label("• iPhone/iPad: AirDrop or email yourself the file, then tap it to add the events.");
+                        });
+                    }
                 });
+            });
+            if !self.use_date_range {
+                ui.label(egui::RichText::new("Calendar export needs a date range, not a fixed duration.").weak());
             }
             ui.add_space(8.0);
         });
 
         if close || modal.should_close() {
-            self.show_reading_length_dialog = false;
+            self.show_output_dialog = false;
         }
     }
 
