@@ -73,11 +73,18 @@ struct ReadingTrack {
     selected: Vec<bool>,
     read_times: u32,
     show_books: bool,
+    // false = balance the selected books' length across the plan's duration
+    // (the original behavior); true = read a fixed number of chapters every
+    // day instead, letting the track finish early or run out of days.
+    #[serde(default)]
+    fixed_pace: bool,
+    #[serde(default = "default_chapters_per_day")]
+    chapters_per_day: u32,
 }
 
 impl ReadingTrack {
     fn empty() -> Self {
-        Self { selected: vec![false; 66], read_times: 1, show_books: false }
+        Self { selected: vec![false; 66], read_times: 1, show_books: false, fixed_pace: false, chapters_per_day: default_chapters_per_day() }
     }
 
     fn select_range(&mut self, start: usize, end: usize) {
@@ -121,35 +128,93 @@ impl ReadingTrack {
                     if active { self.deselect_range(start, end); } else { self.select_range(start, end); }
                 }
             }
-
-            // Styled as a plain gray outline so it reads as a distinct,
-            // less-frequent action than the filled quick-select pills.
-            let gray = egui::Color32::from_gray(130);
-            let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
-            if outline_button(ui, "Clear", gray, gray_hover).clicked() {
-                self.selected = vec![false; 66];
-            }
         });
 
         ui.add_space(4.0);
+        egui::Sides::new().show(
+            ui,
+            |ui| {
+                contrast_radio_value(ui, &mut self.read_times, 1, "Once");
+                contrast_radio_value(ui, &mut self.read_times, 2, "Twice");
+                let multi = self.read_times >= 3;
+                if contrast_radio(ui, multi, "Multiple times").clicked() && !multi {
+                    self.read_times = 3;
+                }
+                if multi {
+                    ui.add(egui::DragValue::new(&mut self.read_times).range(3u32..=52));
+                }
+            },
+            |ui| {
+                // Styled as a plain gray outline so it reads as a distinct,
+                // less-frequent action than the filled quick-select pills.
+                let gray = egui::Color32::from_gray(130);
+                let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
+                if outline_button(ui, "Clear", gray, gray_hover).clicked() {
+                    self.selected = vec![false; 66];
+                }
+            },
+        );
+
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.read_times, 1, "Once");
-            ui.radio_value(&mut self.read_times, 2, "Twice");
-            let multi = self.read_times >= 3;
-            if ui.radio(multi, "Multiple times").clicked() && !multi {
-                self.read_times = 3;
-            }
-            if multi {
-                ui.add(egui::DragValue::new(&mut self.read_times).range(3u32..=52));
+            contrast_radio_value(ui, &mut self.fixed_pace, false, "Balance across duration");
+            contrast_radio_value(ui, &mut self.fixed_pace, true, "Fixed chapters/day");
+            if self.fixed_pace {
+                ui.add(egui::DragValue::new(&mut self.chapters_per_day).range(1u32..=50));
             }
         });
         ui.add_space(8.0);
 
-        // Toggle for the individual book list
-        let toggle_label = if self.show_books { "Hide individual books" } else { "Show individual books" };
-        if ui.small_button(toggle_label).clicked() {
-            self.show_books = !self.show_books;
-        }
+        // Toggle for the individual book list. The chevron is painted
+        // directly rather than drawn as a text glyph — arrow characters
+        // aren't in egui's bundled font and render as a missing-glyph box.
+        // Points down when collapsed (click to reveal downward) and up when
+        // expanded (click to collapse back up).
+        let toggle_hover = if self.show_books { "Hide individual books" } else { "Show individual books" };
+        ui.horizontal_wrapped(|ui| {
+            let response = ui
+                .scope(|ui| {
+                    let widgets = &mut ui.style_mut().visuals.widgets;
+                    // Borderless, transparent-background icon button — just the
+                    // chevron, whose own fill color already shifts on hover. A
+                    // fixed (rather than per-state) `bg_stroke` width avoids a
+                    // pixel-shift bug: egui derives the button's padding from
+                    // that width, and it defaults to 0 when inactive but 1 when
+                    // hovered/active.
+                    for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+                        state.weak_bg_fill = egui::Color32::TRANSPARENT;
+                        state.bg_stroke = egui::Stroke::new(1.0, egui::Color32::TRANSPARENT);
+                    }
+                    let response = ui.add(egui::Button::new("").min_size(egui::Vec2::splat(17.0)));
+                    let color = ui.style().interact(&response).fg_stroke.color;
+                    paint_chevron(ui, response.rect, !self.show_books, color);
+                    response
+                })
+                .inner
+                .on_hover_text(toggle_hover);
+            if response.clicked() {
+                self.show_books = !self.show_books;
+            }
+
+            // While collapsed, summarize the selection as chips next to the
+            // chevron. Books already covered by a fully-selected quick-select
+            // group (highlighted above) are left out — e.g. selecting the
+            // whole Poetry group shows just the "Poetry" button instead of
+            // five redundant chips.
+            if !self.show_books {
+                let mut covered = [false; 66];
+                for &(_, start, end) in BOOK_GROUPS {
+                    if (start..=end).all(|i| self.selected[i]) {
+                        for i in start..=end { covered[i] = true; }
+                    }
+                }
+                for (i, &name) in BOOK_NAMES.iter().enumerate() {
+                    if self.selected[i] && !covered[i] {
+                        book_pill(ui, name);
+                    }
+                }
+            }
+        });
 
         if self.show_books {
             ui.add_space(6.0);
@@ -161,7 +226,7 @@ impl ReadingTrack {
                 .min_col_width(col_width)
                 .show(ui, |ui| {
                     for (i, &name) in BOOK_NAMES.iter().enumerate() {
-                        ui.checkbox(&mut self.selected[i], name);
+                        contrast_checkbox(ui, &mut self.selected[i], name);
                         if (i + 1) % num_cols == 0 { ui.end_row(); }
                     }
                     if BOOK_NAMES.len() % num_cols != 0 { ui.end_row(); }
@@ -172,15 +237,77 @@ impl ReadingTrack {
     }
 }
 
+// A dialog close ("X") button styled like a native window control: a plain
+// glyph in a small, borderless hit area, with a light gray circular
+// background that darkens slightly on hover. Painted by hand rather than
+// built from `Button` — its padding is derived from font metrics and isn't
+// reliably sized.
+fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let size = egui::vec2(12.0, 9.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let dark_mode = ui.visuals().dark_mode;
+        let base_fill = if dark_mode { egui::Color32::from_gray(60) } else { egui::Color32::from_gray(225) };
+        let fill = if response.hovered() {
+            shade(base_fill, if dark_mode { -15 } else { -20 })
+        } else {
+            base_fill
+        };
+        // The circle is drawn a bit larger than the hit area itself, which
+        // is kept small and tight around the glyph.
+        ui.painter().circle_filled(rect.center(), rect.height().min(rect.width()) / 2.0 + 4.0, fill);
+        // Drawn as two crossing line segments rather than a text glyph — a
+        // font's "X" has a taller line-height than it is wide, so no font
+        // size makes it come out with equal width and height.
+        let half = 2.5;
+        let stroke = egui::Stroke::new(1.2, ui.visuals().text_color());
+        let c = rect.center();
+        ui.painter().line_segment([c + egui::vec2(-half, -half), c + egui::vec2(half, half)], stroke);
+        ui.painter().line_segment([c + egui::vec2(-half, half), c + egui::vec2(half, -half)], stroke);
+    }
+    response
+}
+
+fn default_chapters_per_day() -> u32 { 3 }
 fn default_dark_mode() -> bool { true }
 fn default_ui_scale() -> f32 { 1.2 }
 fn default_reading_speed_wpm() -> u32 { 200 }
 fn default_output_dir() -> String { "reading_plan".to_string() }
 
+// A small read-only "chip" naming one selected book — shown next to the
+// collapsed book list so the current selection stays visible without
+// expanding the grid. Colored to match the quick-select buttons.
+fn book_pill(ui: &mut egui::Ui, label: &str) {
+    let dark_mode = ui.visuals().dark_mode;
+    let fill = if dark_mode {
+        ui.visuals().selection.bg_fill
+    } else {
+        egui::Color32::from_rgb(0, 92, 128)
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).color(egui::Color32::WHITE).size(12.0));
+        });
+}
+
 // Shift each RGB channel by `delta` (negative darkens, positive lightens).
 fn shade(c: egui::Color32, delta: i16) -> egui::Color32 {
     let f = |v: u8| ((v as i16 + delta).clamp(0, 255)) as u8;
     egui::Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
+}
+
+// A small filled triangle centered in `rect`, pointing down or up.
+fn paint_chevron(ui: &egui::Ui, rect: egui::Rect, pointing_down: bool, color: egui::Color32) {
+    let rect = egui::Rect::from_center_size(rect.center(), rect.size() * 0.65);
+    let points = if pointing_down {
+        vec![rect.left_top(), rect.right_top(), rect.center_bottom()]
+    } else {
+        vec![rect.left_bottom(), rect.right_bottom(), rect.center_top()]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(points, color, egui::Stroke::NONE));
 }
 
 // Draw an outlined button (transparent fill, colored border + text) whose
@@ -248,6 +375,45 @@ fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui
         response.union(text_response)
     })
     .inner
+}
+
+// A radio button styled to match contrast_checkbox — solid accent fill with
+// a light inner dot instead of the default thin ring/dot.
+fn contrast_radio(ui: &mut egui::Ui, checked: bool, label: &str) -> egui::Response {
+    let dark_mode = ui.visuals().dark_mode;
+    ui.horizontal(|ui| {
+        let radio_response = ui.scope(|ui| {
+            if checked {
+                let accent = if dark_mode {
+                    ui.visuals().selection.bg_fill
+                } else {
+                    egui::Color32::from_rgb(0, 92, 128)
+                };
+                let widgets = &mut ui.style_mut().visuals.widgets;
+                for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+                    state.bg_fill = accent;
+                    state.bg_stroke = egui::Stroke::new(1.0, accent);
+                    state.fg_stroke = egui::Stroke::new(2.5, egui::Color32::WHITE);
+                }
+            }
+            ui.add(egui::RadioButton::new(checked, ()))
+        })
+        .inner;
+
+        let text_response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        radio_response.union(text_response)
+    })
+    .inner
+}
+
+// Same as `ui.radio_value`, but drawn with `contrast_radio`.
+fn contrast_radio_value<Value: PartialEq>(ui: &mut egui::Ui, current_value: &mut Value, alternative: Value, label: &str) -> egui::Response {
+    let mut response = contrast_radio(ui, *current_value == alternative, label);
+    if response.clicked() && *current_value != alternative {
+        *current_value = alternative;
+        response.mark_changed();
+    }
+    response
 }
 
 // Draw a solid-colored button whose fill responds to hover/press, since
@@ -483,11 +649,19 @@ impl eframe::App for BiblePlannerApp {
             egui::Visuals::light()
         });
         if self.applied_ui_scale != Some(self.ui_scale) {
+            // Scale the window's current logical size by the change in scale,
+            // instead of resetting to a fixed size — that keeps a pinned/
+            // snapped window's position and proportions instead of snapping
+            // it back to a default box that can spill past the pinned area.
+            let old_scale = ui.ctx().pixels_per_point();
+            let current_size = ui
+                .ctx()
+                .input(|i| i.viewport().inner_rect)
+                .map_or(egui::Vec2::from(WINDOW_SIZE), |r| r.size());
+            let new_size = current_size * (self.ui_scale / old_scale);
             ui.ctx().set_pixels_per_point(self.ui_scale);
-            // Re-request the same logical size so the window grows in physical
-            // pixels along with the scale, keeping the same usable point-area.
             ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::InnerSize(WINDOW_SIZE.into()));
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(new_size));
             self.applied_ui_scale = Some(self.ui_scale);
         }
         // The `ui` eframe hands us has no background fill, so the window would
@@ -596,7 +770,7 @@ impl BiblePlannerApp {
             section_frame(ui, "📅", "Schedule", self.dark_mode, |ui| {
                 // radio_value(&mut field, value_when_selected, "label")
                 // The field is set to `value_when_selected` when this radio is clicked.
-                ui.radio_value(&mut self.use_date_range, true, "Date range");
+                contrast_radio_value(ui, &mut self.use_date_range, true, "Date range");
                 if self.use_date_range {
                     ui.indent("date_range_fields", |ui| {
                         const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun",
@@ -614,6 +788,9 @@ impl BiblePlannerApp {
                             ui.add(egui::DragValue::new(&mut self.start_year).range(2020..=2100));
                             egui::ComboBox::from_id_salt("start_month")
                                 .width(50.0)
+                                // Tall enough to show all 12 months without scrolling
+                                // (the default max height only fits ~9).
+                                .height(300.0)
                                 .selected_text(MONTHS[(self.start_month - 1) as usize])
                                 .show_ui(ui, |ui| {
                                     for (i, &name) in MONTHS.iter().enumerate() {
@@ -627,6 +804,9 @@ impl BiblePlannerApp {
                             ui.add(egui::DragValue::new(&mut self.end_year).range(2020..=2100));
                             egui::ComboBox::from_id_salt("end_month")
                                 .width(50.0)
+                                // Tall enough to show all 12 months without scrolling
+                                // (the default max height only fits ~9).
+                                .height(300.0)
                                 .selected_text(MONTHS[(self.end_month - 1) as usize])
                                 .show_ui(ui, |ui| {
                                     for (i, &name) in MONTHS.iter().enumerate() {
@@ -643,14 +823,14 @@ impl BiblePlannerApp {
                             ui.label("Skip weekdays:");
                             let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
                             for (i, name) in names.iter().enumerate() {
-                                ui.checkbox(&mut self.skip_days[i], *name);
+                                contrast_checkbox(ui, &mut self.skip_days[i], name);
                             }
                         });
                     });
                     ui.add_space(4.0);
                 }
 
-                ui.radio_value(&mut self.use_date_range, false, "Fixed duration (days)");
+                contrast_radio_value(ui, &mut self.use_date_range, false, "Fixed duration (days)");
                 if !self.use_date_range {
                     ui.indent("fixed_duration_fields", |ui| {
                         ui.horizontal(|ui| {
@@ -847,7 +1027,7 @@ impl BiblePlannerApp {
                 |ui| {
                     ui.heading("⚙ Settings");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("X").clicked() {
+                        if close_button(ui).clicked() {
                             close = true;
                         }
                     });
@@ -859,8 +1039,8 @@ impl BiblePlannerApp {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label("Theme:");
-                ui.radio_value(&mut self.dark_mode, false, "Light");
-                ui.radio_value(&mut self.dark_mode, true, "Dark");
+                contrast_radio_value(ui, &mut self.dark_mode, false, "Light");
+                contrast_radio_value(ui, &mut self.dark_mode, true, "Dark");
             });
             ui.add_space(8.0);
             ui.separator();
@@ -868,10 +1048,10 @@ impl BiblePlannerApp {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label("UI scale:");
-                ui.radio_value(&mut self.ui_scale, 1.0, "Small");
-                ui.radio_value(&mut self.ui_scale, 1.2, "Medium");
-                ui.radio_value(&mut self.ui_scale, 1.4, "Large");
-                ui.radio_value(&mut self.ui_scale, 1.6, "Extra large");
+                contrast_radio_value(ui, &mut self.ui_scale, 1.0, "Small");
+                contrast_radio_value(ui, &mut self.ui_scale, 1.2, "Medium");
+                contrast_radio_value(ui, &mut self.ui_scale, 1.4, "Large");
+                contrast_radio_value(ui, &mut self.ui_scale, 1.6, "Extra large");
             });
             ui.add_space(8.0);
             ui.separator();
@@ -926,7 +1106,7 @@ impl BiblePlannerApp {
                 |ui| {
                     ui.heading("📏 Bible Reading Plan");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("X").clicked() {
+                        if close_button(ui).clicked() {
                             close = true;
                         }
                     });
@@ -942,8 +1122,8 @@ impl BiblePlannerApp {
                 ui.indent("reading_length_fields", |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Reading length shown as:");
-                        ui.radio_value(&mut self.use_reading_minutes, false, "Word count");
-                        ui.radio_value(&mut self.use_reading_minutes, true, "Minutes");
+                        contrast_radio_value(ui, &mut self.use_reading_minutes, false, "Word count");
+                        contrast_radio_value(ui, &mut self.use_reading_minutes, true, "Minutes");
                     });
                     if self.use_reading_minutes {
                         ui.add_space(4.0);
@@ -996,7 +1176,7 @@ impl BiblePlannerApp {
                 |ui| {
                     ui.heading("⏱ Catch-up Days");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("X").clicked() {
+                        if close_button(ui).clicked() {
                             close = true;
                         }
                     });
@@ -1046,7 +1226,7 @@ impl BiblePlannerApp {
                 |ui| {
                     ui.heading("💾 Output");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("X").clicked() {
+                        if close_button(ui).clicked() {
                             close = true;
                         }
                     });
@@ -1210,8 +1390,11 @@ impl BiblePlannerApp {
     }
 
     fn generate_plan_impl(&mut self, skip_catchup_check: bool) {
-        // Build book index lists from the track selections
-        let mut book_indexes: Vec<Vec<i32>> = Vec::new();
+        // Build each track's book index list, along with its pacing mode —
+        // needed alongside the indexes all the way through to plan-building,
+        // so track and index lists must stay zipped together rather than
+        // being two separately-filtered lists.
+        let mut track_plans: Vec<(Vec<i32>, bool, u32)> = Vec::new();
         for track in &self.tracks {
             let indexes: Vec<i32> = (0..66)
                 .filter(|&i| track.selected[i])
@@ -1223,9 +1406,9 @@ impl BiblePlannerApp {
                 .cycle()
                 .take(indexes.len() * track.read_times as usize)
                 .collect();
-            book_indexes.push(repeated);
+            track_plans.push((repeated, track.fixed_pace, track.chapters_per_day));
         }
-        if book_indexes.is_empty() {
+        if track_plans.is_empty() {
             self.set_status("Please select at least one book.", true);
             return;
         }
@@ -1268,9 +1451,14 @@ impl BiblePlannerApp {
             // Deliberately-requested extra catch-up days shouldn't count
             // against the "far fewer chapters than days" warning — that
             // warning is about an unintentional mismatch, not a choice the
-            // user already made.
+            // user already made. Fixed-pace tracks don't get catch-up days
+            // at all, so they're excluded from this check too.
             let content_duration = (duration - self.extra_catchup_days).max(1);
-            if let Some(message) = self.catchup_warning(&book_indexes, content_duration) {
+            let balanced_book_indexes: Vec<Vec<i32>> = track_plans.iter()
+                .filter(|&(_, fixed_pace, _)| !fixed_pace)
+                .map(|(indexes, _, _)| indexes.clone())
+                .collect();
+            if let Some(message) = self.catchup_warning(&balanced_book_indexes, content_duration) {
                 self.pending_catchup_warning = Some(message);
                 return;
             }
@@ -1295,24 +1483,34 @@ impl BiblePlannerApp {
         };
         let mut combined_plan: Vec<Vec<ChaptersDays>> = Vec::new();
         let mut combined_lengths: Vec<DailyLength> = Vec::new();
+        let mut fixed_pace_overran = false;
 
-        for book_index in book_indexes {
-            let bible_data = match get_bible_chapter_data("bible.csv", book_index.clone(), true) {
-                Ok(d) => d,
-                Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
-            };
+        for (book_index, fixed_pace, chapters_per_day) in track_plans {
             let chapter_data = match get_bible_chapter_data("bible.csv", book_index.clone(), false) {
                 Ok(d) => d,
                 Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
             };
 
-            let plan = build_track_plan(
-                bible_data,
-                chapter_data.clone(),
-                duration,
-                self.extra_catchup_days,
-                self.catchup_after_long_books,
-            );
+            let plan = if fixed_pace {
+                let mut plan = build_fixed_pace_plan(chapter_data.clone(), chapters_per_day);
+                if plan.len() as i32 > duration {
+                    fixed_pace_overran = true;
+                    plan.truncate(duration.max(0) as usize);
+                }
+                plan
+            } else {
+                let bible_data = match get_bible_chapter_data("bible.csv", book_index.clone(), true) {
+                    Ok(d) => d,
+                    Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
+                };
+                build_track_plan(
+                    bible_data,
+                    chapter_data.clone(),
+                    duration,
+                    self.extra_catchup_days,
+                    self.catchup_after_long_books,
+                )
+            };
 
             for (i, day) in plan.iter().enumerate() {
                 if combined_plan.len() <= i { combined_plan.push(Vec::new()); }
@@ -1354,6 +1552,9 @@ impl BiblePlannerApp {
                         message = format!("{} (calendar export failed: {})", message, e);
                     }
                     None => { self.last_ics_output = None; }
+                }
+                if fixed_pace_overran {
+                    message = format!("{} (a fixed chapters/day track didn't finish within the selected duration)", message);
                 }
                 self.set_status(message, false);
                 // Persist settings after a successful generation
@@ -1994,6 +2195,43 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDays>, i: usize, title: String,
 // A book that would take at least this many days to read on its own counts
 // as "long" for the optional catch-up-day-after-long-books feature.
 const LONG_BOOK_DAY_THRESHOLD: i32 = 5;
+
+// Build a track's plan by reading a fixed number of chapters every day,
+// instead of balancing the selected books' length across `duration`. Chapter
+// numbers in `chapter_data` are per-book (see `get_bible_chapter_data`), and
+// with a repeated read (`read_times` > 1) the same book's numbering starts
+// over from 1 partway through the list — so a chunk stops (even if it
+// hasn't reached `chapters_per_day` chapters yet) whenever the title changes
+// or the chapter number stops increasing, rather than ever spanning two
+// books (or two passes of the same book) in one day.
+//
+// Unlike the length-balanced plan, this doesn't force the result to be
+// exactly `duration` days long: the caller decides what to do if reading at
+// this pace finishes early or doesn't fit.
+fn build_fixed_pace_plan(chapter_data: Vec<ChapterData>, chapters_per_day: u32) -> Vec<ChaptersDays> {
+    let chapters_per_day = chapters_per_day.max(1) as usize;
+    let mut plan = Vec::new();
+    let mut day = 1;
+    let mut i = 0;
+    while i < chapter_data.len() {
+        let title = chapter_data[i].title.clone();
+        let mut last_chapter = chapter_data[i].chapters;
+        i += 1;
+        let mut count = 1;
+        while count < chapters_per_day
+            && i < chapter_data.len()
+            && chapter_data[i].title == title
+            && chapter_data[i].chapters > last_chapter
+        {
+            last_chapter = chapter_data[i].chapters;
+            i += 1;
+            count += 1;
+        }
+        plan.push(ChaptersDays { titles: vec![title], chapters: last_chapter, days: day });
+        day += 1;
+    }
+    plan
+}
 
 // Build one track's day-by-day plan, optionally reserving some days as
 // catch-up days — either a user-requested count spread evenly across the
