@@ -2,7 +2,7 @@ name: Deploy web build to GitHub Pages
 
 on:
   push:
-    branches: [develop]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,10 @@ permissions:
   id-token: write
 
 # Only one deploy at a time; a new push cancels an in-progress one rather
-# than queuing behind it, since only the latest develop should ever be live.
+# than queuing behind it, since only the latest main should ever be live.
+# develop is for active feature/bugfix work; main only moves forward when
+# develop is explicitly promoted into it via a develop -> main PR, so a push
+# here always represents a deliberate "make this the live web app" decision.
 concurrency:
   group: pages
   cancel-in-progress: true
