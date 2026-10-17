@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<head>
+    <title>Bible Reading Planner</title>
+    <style>
+        html, body {
+            /* `%` here resolves against the parent's height, which only
+               tracks the viewport if every ancestor up the chain also has
+               an explicit height — a chain that doesn't reliably re-resolve
+               when the viewport itself changes size (e.g. docking/undocking
+               devtools), leaving the canvas sized for a stale viewport.
+               `vw`/`vh` tie directly to the viewport with no such chain. */
+            width: 100vw;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1b1b1b;
+        }
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="the_canvas_id"></canvas>
+    <!-- Trunk injects the real module-loading script (with the hashed
+         wasm-bindgen filenames) right before this closing tag at build
+         time — nothing manual needed here. -->
+</body>
+</html>
