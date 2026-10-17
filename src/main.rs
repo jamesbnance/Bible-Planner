@@ -751,7 +751,33 @@ impl eframe::App for BiblePlannerApp {
             .show(ui, |ui| {
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(20, 16))
-                    .show(ui, |ui| { self.panel_contents(ui); });
+                    .show(ui, |ui| {
+                        // Cap the form to a comfortable reading width and
+                        // center it, rather than letting it stretch
+                        // edge-to-edge on wide (e.g. desktop browser) windows.
+                        // egui's own sizes are all in logical points, which
+                        // grow in on-screen pixels as the UI scale goes up —
+                        // dividing by pixels_per_point keeps the cap at a
+                        // constant 1000 screen pixels at any scale, rather
+                        // than 1000 points (1600 screen pixels at 1.6x).
+                        const MAX_CONTENT_WIDTH_PX: f32 = 1000.0;
+                        let max_content_width = MAX_CONTENT_WIDTH_PX / ui.ctx().pixels_per_point();
+                        let content_width = ui.available_width().min(max_content_width);
+                        let margin = (ui.available_width() - content_width) / 2.0;
+                        // Plain `ui.horizontal` only allocates a single
+                        // row's height upfront, which starves a nested
+                        // `ScrollArea` of vertical space; `horizontal_top`
+                        // allocates the full available height instead.
+                        ui.horizontal_top(|ui| {
+                            if margin > 0.0 {
+                                ui.add_space(margin);
+                            }
+                            ui.vertical(|ui| {
+                                ui.set_width(content_width);
+                                self.panel_contents(ui);
+                            });
+                        });
+                    });
             });
 
         let ctx = ui.ctx().clone();
