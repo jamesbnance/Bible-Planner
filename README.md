@@ -9,11 +9,13 @@ Built in Rust using [eframe](https://github.com/emilk/egui/tree/master/crates/ef
 - **Multiple reading tracks** — read different sets of books at different paces in parallel (e.g. OT once, NT twice); each active track gets its own column in the output
 - **Flexible book selection** — quick-select groups (Entire Bible, OT, NT, Pentateuch, History, Poetry, Major/Minor Prophets, Gospels+Acts, Epistles, Revelation) or pick individual books; groups toggle on/off with a single click, and a Clear button resets a track
 - **Repetition control** — read a track once, twice, or any number of times
+- **Per-track pacing** — balance each track's reading length across the plan's duration (the default), or switch a track to a fixed number of chapters every day instead. A fixed-pace track simply stops when it reaches the end of the selected books, leaving the remaining days blank. If it doesn't finish in time, it's cut off at the plan's end date with a warning
 - **Date-range or fixed-duration scheduling** — specify a start/end date or a total number of days
 - **Skip days** — exclude any day(s) of the week (e.g. skip Sundays)
-- **Balanced daily reading** — chapters are grouped to minimize the length of the single worst day (and, among splits that tie on that, to minimize variance), rather than a naive average-based pass that could dump an oversized chapter (e.g. Psalm 119) onto whatever short chapters came right before it
-- **Exact-length plans** — day allocation always sums to exactly the requested duration, and any leftover catch-up days are spread proportionally across the schedule instead of clustering into one long run
-- **Catch-up day warning** — if a book selection has far fewer chapters than the plan's duration (25%+ of days would otherwise be catch-up days), you're warned before generating and can choose to proceed anyway or go back and adjust the schedule
+- **Balanced daily reading** — for tracks using length-balanced pacing, chapters are grouped to minimize the length of the single worst day (and, among splits that tie on that, to minimize variance), rather than a naive average-based pass that could dump an oversized chapter (e.g. Psalm 119) onto whatever short chapters came right before it
+- **Exact-length plans** — a length-balanced track's day allocation always sums to exactly the requested duration, and any leftover catch-up days are spread proportionally across the schedule instead of clustering into one long run
+- **Catch-up day warning** — if a length-balanced track has far fewer chapters than the plan's duration (25%+ of days would otherwise be catch-up days), you're warned before generating and can choose to proceed anyway or go back and adjust the schedule
+- **Configurable catch-up days** — for length-balanced tracks, optionally add a fixed number of extra catch-up days (spread evenly across the schedule) and/or automatically insert one after finishing any book long enough to take 5+ days, via "Configure Catch-up Days..."
 - **Reading length output** — optionally include each day's reading length in the CSV, shown as either an estimated word count or estimated minutes (at a reading speed you set)
 - **Optional weekday and header columns** — show the day of the week as its own column, and/or add a header row to the CSV, both off by default
 - **Calendar export** — optionally also write an `.ics` file (one all-day event per reading day) for import into Google Calendar, Apple Calendar, or a phone's calendar app; an info button explains how
@@ -32,7 +34,7 @@ Built in Rust using [eframe](https://github.com/emilk/egui/tree/master/crates/ef
 cargo run --release
 ```
 
-The app must be run from the directory containing `bible.csv`. Settings are saved to `bible_planner_config.json` in the same directory.
+The app must be run from the directory containing `bible.csv`. Settings are saved to `bible_planner_config.json` in the same directory; it's rewritten on every generate and gitignored, not meant to be committed.
 
 ## Output
 
