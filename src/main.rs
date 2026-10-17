@@ -1,6 +1,5 @@
 use chrono::{NaiveDate, Datelike, Utc};
 use serde::Deserialize;
-use std::fs::File;
 use std::error::Error;
 use std::collections::{HashMap, HashSet};
 use csv::ReaderBuilder;
@@ -35,6 +34,10 @@ struct DailyLength {
 }
 
 // ── Book data ────────────────────────────────────────────────────────────────
+
+// Embedded at compile time rather than read from disk at runtime — needed
+// for the wasm build (no filesystem), and simpler for native too.
+const BIBLE_CSV: &str = include_str!("../bible.csv");
 
 const BOOK_NAMES: [&str; 66] = [
     "Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy",
@@ -482,6 +485,49 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 // requiring the user to manually widen/heighten the window.
 const WINDOW_SIZE: [f32; 2] = [560.0, 820.0];
 
+// Key settings are saved under, whether that's a browser's localStorage (web)
+// or a file of the same name (native).
+const CONFIG_STORAGE_KEY: &str = "bible_planner_config";
+
+// Parse saved settings JSON (if any) into an app, applying it the same way
+// on every target: preferences (theme, UI scale, output folder, reading
+// speed, output-format toggles, ...) persist across runs, but the plan
+// itself — track/book selections, date range, and duration — always starts
+// fresh rather than remembering the last session.
+fn app_from_config_json(json: Option<String>) -> BiblePlannerApp {
+    let mut app: BiblePlannerApp = json
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let defaults = BiblePlannerApp::default();
+    app.tracks = defaults.tracks;
+    app.use_date_range = defaults.use_date_range;
+    app.start_year = defaults.start_year;
+    app.start_month = defaults.start_month;
+    app.start_day = defaults.start_day;
+    app.end_year = defaults.end_year;
+    app.end_month = defaults.end_month;
+    app.end_day = defaults.end_day;
+    app.skip_days = defaults.skip_days;
+    app.duration = defaults.duration;
+
+    app
+}
+
+// Persist settings for next time: a file on native, localStorage on the web.
+fn save_settings(app: &BiblePlannerApp) {
+    let Ok(json) = serde_json::to_string_pretty(app) else { return; };
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = std::fs::write(format!("{CONFIG_STORAGE_KEY}.json"), json);
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok()).flatten() {
+            let _ = storage.set_item(CONFIG_STORAGE_KEY, &json);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -492,30 +538,60 @@ fn main() -> Result<(), eframe::Error> {
         "Bible Reading Planner",
         options,
         Box::new(|_cc| {
-            let mut app: BiblePlannerApp = std::fs::read_to_string("bible_planner_config.json")
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-
-            // App preferences (theme, UI scale, output folder, reading speed,
-            // output-format toggles, ...) persist across runs, but the plan
-            // itself — track/book selections, date range, and duration —
-            // always starts fresh rather than remembering the last session.
-            let defaults = BiblePlannerApp::default();
-            app.tracks = defaults.tracks;
-            app.use_date_range = defaults.use_date_range;
-            app.start_year = defaults.start_year;
-            app.start_month = defaults.start_month;
-            app.start_day = defaults.start_day;
-            app.end_year = defaults.end_year;
-            app.end_month = defaults.end_month;
-            app.end_day = defaults.end_day;
-            app.skip_days = defaults.skip_days;
-            app.duration = defaults.duration;
-
-            Ok(Box::new(app))
+            let json = std::fs::read_to_string(format!("{CONFIG_STORAGE_KEY}.json")).ok();
+            Ok(Box::new(app_from_config_json(json)))
         }),
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use eframe::wasm_bindgen::JsCast as _;
+
+    console_error_panic_hook::set_once();
+
+    // wgpu's own `Instance::new()` only falls back to WebGL if the browser
+    // has no `navigator.gpu` at all — if that property exists but can't
+    // actually produce an adapter (seen on real machines/browsers, not just
+    // old ones), it commits to the WebGPU backend anyway and then fails with
+    // "No available adapters", with no second chance to fall back. Since
+    // this is a simple 2D UI with nothing to gain from WebGPU, force WebGL
+    // unconditionally instead of leaving that choice to a check that can't
+    // actually tell whether WebGPU will work.
+    let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+    let web_options = eframe::WebOptions {
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    wasm_bindgen_futures::spawn_local(async {
+        let document = web_sys::window()
+            .expect("No window")
+            .document()
+            .expect("No document");
+
+        let canvas = document
+            .get_element_by_id("the_canvas_id")
+            .expect("Failed to find #the_canvas_id")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("#the_canvas_id was not a canvas");
+
+        let json = web_sys::window()
+            .and_then(|w| w.local_storage().ok().flatten())
+            .and_then(|s| s.get_item(CONFIG_STORAGE_KEY).ok().flatten());
+
+        let _ = eframe::WebRunner::new()
+            .start(
+                canvas,
+                web_options,
+                Box::new(move |_cc| Ok(Box::new(app_from_config_json(json)))),
+            )
+            .await;
+    });
 }
 
 // ── GUI state ────────────────────────────────────────────────────────────────
@@ -566,7 +642,7 @@ struct BiblePlannerApp {
     #[serde(skip)]
     status_is_error: bool,
     #[serde(skip)]
-    status_shown_at: Option<std::time::Instant>,
+    status_shown_at: Option<web_time::Instant>,
     #[serde(skip)]
     confirming_reset: bool,
     #[serde(skip)]
@@ -876,8 +952,12 @@ impl BiblePlannerApp {
 
             // Open Output File shares Generate Plan's row (to its left) so
             // it's visible right where the user is already looking, rather
-            // than a separate row further down that's easy to miss.
+            // than a separate row further down that's easy to miss. Not
+            // shown on the web — there's no saved file to open there, since
+            // generating already triggers a browser download directly.
+            #[cfg(not(target_arch = "wasm32"))]
             let open_fill = egui::Color32::from_rgb(0, 92, 128);
+            #[cfg(not(target_arch = "wasm32"))]
             let last_output = self.last_output.clone();
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), button_size.y),
@@ -891,6 +971,7 @@ impl BiblePlannerApp {
                             self.set_status("Plan generation failed — the settings caused an internal error. Try a different date range or book selection.", true);
                         }
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
                     if let Some(path) = &last_output {
                         ui.add_space(10.0);
                         if colored_button(ui, "📂 Open Output File", open_fill, button_size).clicked() {
@@ -903,6 +984,7 @@ impl BiblePlannerApp {
             // Status is shown as a centered toast (see show_status_toast) rather than inline here.
             // The toast itself (shown immediately, no scrolling needed) also
             // offers this same "open" action right after a successful generation.
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(path) = &self.last_ics_output.clone() {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
@@ -921,7 +1003,7 @@ impl BiblePlannerApp {
     fn set_status(&mut self, message: impl Into<String>, is_error: bool) {
         self.status = message.into();
         self.status_is_error = is_error;
-        self.status_shown_at = Some(std::time::Instant::now());
+        self.status_shown_at = Some(web_time::Instant::now());
     }
 
     // Status/warning toast, centered over the whole window. Auto-dismisses
@@ -942,8 +1024,12 @@ impl BiblePlannerApp {
         let is_error = self.status_is_error;
         // Surface the "open" action here too, right when the toast appears —
         // no scrolling needed — since the standalone Open Output File button
-        // further down the form is easy to miss.
+        // further down the form is easy to miss. Not applicable on the web,
+        // where there's no saved file (generating already downloads it).
+        #[cfg(not(target_arch = "wasm32"))]
         let output_path = if is_error { None } else { self.last_output.clone() };
+        #[cfg(target_arch = "wasm32")]
+        let output_path: Option<String> = None;
         let mut dismissed = false;
         let mut open_requested = false;
 
@@ -1235,21 +1321,26 @@ impl BiblePlannerApp {
             ui.add_space(8.0);
             ui.separator();
 
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label("Output folder:");
-                ui.label(egui::RichText::new(&self.output_dir).weak());
-                if ui.small_button("Browse...").clicked() {
-                    if let Some(dir) = rfd::FileDialog::new()
-                        .set_directory(&self.output_dir)
-                        .pick_folder()
-                    {
-                        self.output_dir = dir.to_string_lossy().to_string();
+            // There's no output folder on the web — generated files are
+            // handed to the browser as downloads instead.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Output folder:");
+                    ui.label(egui::RichText::new(&self.output_dir).weak());
+                    if ui.small_button("Browse...").clicked() {
+                        if let Some(dir) = rfd::FileDialog::new()
+                            .set_directory(&self.output_dir)
+                            .pick_folder()
+                        {
+                            self.output_dir = dir.to_string_lossy().to_string();
+                        }
                     }
-                }
-            });
-            ui.add_space(8.0);
-            ui.separator();
+                });
+                ui.add_space(8.0);
+                ui.separator();
+            }
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -1269,7 +1360,10 @@ impl BiblePlannerApp {
                         ),
                 );
             });
+            #[cfg(not(target_arch = "wasm32"))]
             ui.label(egui::RichText::new(format!(".csv is added automatically; saved under {}/", self.output_dir)).weak());
+            #[cfg(target_arch = "wasm32")]
+            ui.label(egui::RichText::new(".csv is added automatically; downloaded through your browser").weak());
             ui.add_space(8.0);
             ui.separator();
 
@@ -1364,7 +1458,7 @@ impl BiblePlannerApp {
 
         let mut worst: Option<(i32, f64)> = None;
         for book_index in book_indexes {
-            let Ok(bible_data) = get_bible_chapter_data("bible.csv", book_index.clone(), true) else { continue; };
+            let Ok(bible_data) = get_bible_chapter_data(book_index.clone(), true) else { continue; };
             let total_chapters: i32 = bible_data.iter().map(|b| b.chapters).sum();
             if total_chapters <= 0 {
                 continue;
@@ -1465,28 +1559,39 @@ impl BiblePlannerApp {
         }
 
         // Run the existing planning pipeline
-        let output_dir = self.output_dir.trim();
-        let output_dir = if output_dir.is_empty() { "reading_plan" } else { output_dir };
-        if let Err(e) = std::fs::create_dir_all(output_dir) {
-            self.set_status(format!("Error creating output directory: {}", e), true);
-            return;
-        }
-        let filename = if self.custom_filename.trim().is_empty() {
-            format!("{}/reading_plan_{}", output_dir, Utc::now().timestamp())
+        #[cfg(not(target_arch = "wasm32"))]
+        let output_dir = {
+            let output_dir = self.output_dir.trim();
+            let output_dir = if output_dir.is_empty() { "reading_plan" } else { output_dir };
+            if let Err(e) = std::fs::create_dir_all(output_dir) {
+                self.set_status(format!("Error creating output directory: {}", e), true);
+                return;
+            }
+            output_dir
+        };
+        let name = if self.custom_filename.trim().is_empty() {
+            format!("reading_plan_{}", Utc::now().timestamp())
         } else {
             let mut name = self.custom_filename.trim().to_string();
             name = name.replace(['/', '\\'], "_");
             if let Some(stripped) = name.strip_suffix(".csv") {
                 name = stripped.to_string();
             }
-            format!("{}/{}", output_dir, name)
+            name
         };
+        // Native writes to a path under the output directory; the web build
+        // has no filesystem or output directory, so a downloaded file is
+        // just suggested the bare name.
+        #[cfg(not(target_arch = "wasm32"))]
+        let filename = format!("{}/{}", output_dir, name);
+        #[cfg(target_arch = "wasm32")]
+        let filename = name;
         let mut combined_plan: Vec<Vec<ChaptersDays>> = Vec::new();
         let mut combined_lengths: Vec<DailyLength> = Vec::new();
         let mut fixed_pace_overran = false;
 
         for (book_index, fixed_pace, chapters_per_day) in track_plans {
-            let chapter_data = match get_bible_chapter_data("bible.csv", book_index.clone(), false) {
+            let chapter_data = match get_bible_chapter_data(book_index.clone(), false) {
                 Ok(d) => d,
                 Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
             };
@@ -1499,7 +1604,7 @@ impl BiblePlannerApp {
                 }
                 plan
             } else {
-                let bible_data = match get_bible_chapter_data("bible.csv", book_index.clone(), true) {
+                let bible_data = match get_bible_chapter_data(book_index.clone(), true) {
                     Ok(d) => d,
                     Err(e) => { self.set_status(format!("Error reading bible.csv: {}", e), true); return; }
                 };
@@ -1529,37 +1634,50 @@ impl BiblePlannerApp {
         combined_lengths.sort_by_key(|k| k.day);
 
         let wpm = if self.use_reading_minutes { Some(self.reading_speed_wpm) } else { None };
-        let csv_path = format!("{}.csv", filename);
 
-        let ics_result = if self.export_ics && !day_dates.is_empty() {
-            Some(write_ics_file(&filename, &combined_plan, &combined_lengths, self.include_length, &day_dates, wpm))
+        // Built before the CSV content below, since build_csv_content takes
+        // combined_plan/combined_lengths by value (it writes them out as it
+        // consumes them) while this only needs to borrow them.
+        let ics_content = if self.export_ics && !day_dates.is_empty() {
+            Some(build_ics_content(&combined_plan, &combined_lengths, self.include_length, &day_dates, wpm))
         } else {
             None
         };
 
-        match write_to_file(&filename, combined_plan, combined_lengths, self.include_length, day_dates, wpm, self.include_weekday_column, self.include_header) {
-            Ok(_) => {
-                self.last_output = Some(csv_path.clone());
-                let mut message = format!("Written to {}", csv_path);
-                match ics_result {
-                    Some(Ok(())) => {
-                        let ics_path = format!("{}.ics", filename);
-                        self.last_ics_output = Some(ics_path.clone());
-                        message = format!("{} and {}", message, ics_path);
+        let csv_content = build_csv_content(combined_plan, combined_lengths, self.include_length, day_dates, wpm, self.include_weekday_column, self.include_header);
+
+        match csv_content {
+            Ok(csv_content) => {
+                let csv_name = format!("{}.csv", filename);
+                match deliver_file(&csv_name, &csv_content, "text/csv") {
+                    Ok(saved) => {
+                        self.last_output = Some(saved.clone());
+                        let mut message = format!("Saved to {}", saved);
+                        match ics_content {
+                            Some(ics) => {
+                                let ics_name = format!("{}.ics", filename);
+                                match deliver_file(&ics_name, &ics, "text/calendar") {
+                                    Ok(saved) => {
+                                        self.last_ics_output = Some(saved.clone());
+                                        message = format!("{} and {}", message, saved);
+                                    }
+                                    Err(e) => {
+                                        self.last_ics_output = None;
+                                        message = format!("{} (calendar export failed: {})", message, e);
+                                    }
+                                }
+                            }
+                            None => { self.last_ics_output = None; }
+                        }
+                        if fixed_pace_overran {
+                            message = format!("{} (a fixed chapters/day track didn't finish within the selected duration)", message);
+                        }
+                        self.set_status(message, false);
+                        save_settings(self); // Persist settings after a successful generation
                     }
-                    Some(Err(e)) => {
-                        self.last_ics_output = None;
-                        message = format!("{} (calendar export failed: {})", message, e);
+                    Err(e) => {
+                        self.set_status(format!("Error: {}", e), true);
                     }
-                    None => { self.last_ics_output = None; }
-                }
-                if fixed_pace_overran {
-                    message = format!("{} (a fixed chapters/day track didn't finish within the selected duration)", message);
-                }
-                self.set_status(message, false);
-                // Persist settings after a successful generation
-                if let Ok(json) = serde_json::to_string_pretty(self) {
-                    let _ = std::fs::write("bible_planner_config.json", json);
                 }
             }
             Err(e) => {
@@ -1570,12 +1688,64 @@ impl BiblePlannerApp {
 }
 
 fn open_file(path: &str) {
+    let _ = path; // used by exactly one of the arms below, depending on target_os
     #[cfg(target_os = "linux")]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(path).spawn();
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
+}
+
+// Deliver a generated plan file: on native, write it to disk at `name` (a
+// path, possibly with a directory prefix) and return that same path. `mime`
+// is unused here — it only matters for the browser-download path below.
+#[cfg(not(target_arch = "wasm32"))]
+fn deliver_file(name: &str, content: &str, _mime: &str) -> Result<String, Box<dyn Error>> {
+    std::fs::write(name, content)?;
+    Ok(name.to_string())
+}
+
+// Deliver a generated plan file on the web: there's no filesystem, so
+// trigger a browser download of `content` instead, suggesting `name` as the
+// downloaded file's name.
+#[cfg(target_arch = "wasm32")]
+fn deliver_file(name: &str, content: &str, mime: &str) -> Result<String, Box<dyn Error>> {
+    trigger_download(name, content, mime)?;
+    Ok(name.to_string())
+}
+
+// Trigger a browser download of `content` as a file named `name`: wrap it in
+// a `Blob`, point a hidden `<a download>` at an object URL for that blob,
+// and simulate a click — the standard way to hand the user a generated file
+// with no File System Access API support required.
+#[cfg(target_arch = "wasm32")]
+fn trigger_download(name: &str, content: &str, mime: &str) -> Result<(), Box<dyn Error>> {
+    use eframe::wasm_bindgen::{JsCast, JsValue};
+
+    let to_js_err = |e: JsValue| -> Box<dyn Error> { format!("{:?}", e).into() };
+
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let parts = js_sys::Array::of1(&JsValue::from_str(content));
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options).map_err(to_js_err)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(to_js_err)?;
+
+    let document = web_sys::window().ok_or("no window")?.document().ok_or("no document")?;
+    let anchor: web_sys::HtmlAnchorElement = document
+        .create_element("a")
+        .map_err(to_js_err)?
+        .dyn_into()
+        .map_err(|_| "created element was not an <a>")?;
+    anchor.set_href(&url);
+    anchor.set_download(name);
+    let body = document.body().ok_or("no body")?;
+    body.append_child(&anchor).map_err(to_js_err)?;
+    anchor.click();
+    body.remove_child(&anchor).map_err(to_js_err)?;
+    web_sys::Url::revoke_object_url(&url).map_err(to_js_err)?;
+
+    Ok(())
 }
 
 fn get_duration(start: NaiveDate, end: NaiveDate, weekdays_to_skip: &[&str]) -> i32 {
@@ -1594,16 +1764,12 @@ fn get_duration(start: NaiveDate, end: NaiveDate, weekdays_to_skip: &[&str]) -> 
 }
 
 // Create a vector with title, number of chapters, total length
-fn get_bible_chapter_data(file_path: &str, book_index: Vec<i32>, accumulate: bool) -> Result<Vec<ChapterData>, Box<dyn Error>> {
+fn get_bible_chapter_data(book_index: Vec<i32>, accumulate: bool) -> Result<Vec<ChapterData>, Box<dyn Error>> {
   let mut data: Vec<ChapterData> = Vec::new();
 
   for index in book_index {
-      // Re-open the CSV and reinitialize the reader to start from the beginning
-      let file = File::open(file_path).map_err(|e| {
-        eprintln!("Failed to open file '{}': {}", file_path, e);
-        e
-    })?;
-      let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+      // Re-parse the embedded CSV from the start for each book index.
+      let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(BIBLE_CSV.as_bytes());
 
       // Optionally use a HashMap to accumulate data when aggregation is required
       let mut book_map: HashMap<String, ChapterData> = HashMap::new();
@@ -2404,8 +2570,11 @@ fn get_day_dates(start_date: NaiveDate, end_date: NaiveDate, weekdays_to_skip: &
 // If weekday_flag: put the weekday in its own column, first (date-range mode only)
 // If header_flag: write a header row matching the columns actually present (optional weekday,
 // date/day, one column per track, optional word/minute count)
-fn write_to_file(
-  filename: &str,
+// Builds the plan's CSV content in memory and returns it, rather than
+// writing to a path directly — the caller decides how to deliver it (to
+// disk natively, or as a browser download on the web, where there's no
+// filesystem).
+fn build_csv_content(
   combined_plan: Vec<Vec<ChaptersDays>>,
   combined_lengths: Vec<DailyLength>,
   length_flag: bool,
@@ -2413,11 +2582,11 @@ fn write_to_file(
   wpm: Option<u32>,
   weekday_flag: bool,
   header_flag: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<String, Box<dyn Error>> {
   // Default QuoteStyle::Necessary: any field containing a comma, quote, or
   // newline (e.g. "Genesis, Exodus" for a multi-book day) is auto-quoted and
   // escaped, so it can never be misread as extra columns.
-  let mut wtr = csv::WriterBuilder::new().from_path(format!("{}.csv", filename))?;
+  let mut wtr = csv::WriterBuilder::new().from_writer(Vec::new());
 
   let has_weekday_column = weekday_flag && !day_dates.is_empty();
   // Each track contributes one entry per day, so this is the number of
@@ -2497,8 +2666,8 @@ fn write_to_file(
       wtr.write_record(&record)?;
   }
 
-  wtr.flush()?;
-  Ok(())
+  let bytes = wtr.into_inner().map_err(|e| e.to_string())?;
+  Ok(String::from_utf8(bytes)?)
 }
 
 // Escape text per RFC 5545 (backslash, comma, semicolon, newline).
@@ -2512,14 +2681,15 @@ fn escape_ics_text(s: &str) -> String {
 // Write an iCalendar (.ics) file with one all-day event per reading day, so
 // the plan can be imported directly into Google Calendar or iPhone/Apple
 // Calendar. Only meaningful when day_dates is non-empty (date-range mode).
-fn write_ics_file(
-    filename: &str,
+// Returns the content directly (it's built entirely in memory already) —
+// the caller decides how to deliver it, same as `build_csv_content`.
+fn build_ics_content(
     combined_plan: &[Vec<ChaptersDays>],
     combined_lengths: &[DailyLength],
     length_flag: bool,
     day_dates: &[NaiveDate],
     wpm: Option<u32>,
-) -> Result<(), Box<dyn Error>> {
+) -> String {
     let mut ics = String::new();
     let mut line = |s: &str| { ics.push_str(s); ics.push_str("\r\n"); };
 
@@ -2587,6 +2757,5 @@ fn write_ics_file(
 
     line("END:VCALENDAR");
 
-    std::fs::write(format!("{}.ics", filename), ics)?;
-    Ok(())
+    ics
 }

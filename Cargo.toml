@@ -5,8 +5,36 @@ edition = "2021"
 
 [dependencies]
 csv = "1.1"
-chrono = { version = "0.4", features = ["serde"] }
+# "wasmbind" makes Utc::now() use js_sys::Date on wasm32 instead of
+# std::time::SystemTime::now(), which panics there the same way
+# std::time::Instant::now() does (see the web-time comment below) — and
+# unlike that panic, this one happens on every app startup (BiblePlannerApp's
+# default start year), not just when generating a plan.
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
 serde = { version = "1.0", features = ["derive"] }
 eframe = "0.35"
 serde_json = "1"
 rfd = "0.15"
+console_error_panic_hook = "0.1"
+wasm-bindgen-futures = "0.4"
+# std::time::Instant::now() panics on wasm32-unknown-unknown; this is a
+# drop-in replacement backed by Performance.now() there, and just re-exports
+# std::time unchanged on every other target.
+web-time = "1"
+# eframe's default "wgpu" feature only enables wgpu's "webgpu" backend, which
+# fails with "No available adapters" in browsers that don't support the
+# WebGPU API yet. Adding "webgl" here (Cargo unifies features for a shared
+# dependency) lets wgpu fall back to WebGL2 instead.
+wgpu = { version = "29", features = ["webgl"] }
+js-sys = "0.3"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Window", "Document", "HtmlCanvasElement", "Element",
+    # For triggering a browser download of generated plan files, since
+    # there's no filesystem to write to on the web.
+    "Blob", "BlobPropertyBag", "Url", "HtmlAnchorElement", "HtmlElement", "Node",
+    # For persisting settings in the browser, since there's no filesystem.
+    "Storage",
+]
