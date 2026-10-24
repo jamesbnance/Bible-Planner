@@ -56,6 +56,29 @@ const BOOK_NAMES: [&str; 66] = [
     "Jude", "Revelation",
 ];
 
+// Narrowest width (in points) that fits the date range's label-and-controls
+// grid on one line per date.
+const DATE_GRID_MIN_WIDTH: f32 = 270.0;
+
+// Year, month, and day controls for one date of the date range.
+fn date_controls(ui: &mut egui::Ui, month_id: &str, year: &mut i32, month: &mut u32, day: &mut u32, max_day: u32) {
+    const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun",
+                                "Jul","Aug","Sep","Oct","Nov","Dec"];
+    ui.add(egui::DragValue::new(year).range(2020..=2100));
+    egui::ComboBox::from_id_salt(month_id)
+        .width(50.0)
+        // Tall enough to show all 12 months without scrolling
+        // (the default max height only fits ~9).
+        .height(300.0)
+        .selected_text(MONTHS[(*month - 1) as usize])
+        .show_ui(ui, |ui| {
+            for (i, &name) in MONTHS.iter().enumerate() {
+                ui.selectable_value(month, (i + 1) as u32, name);
+            }
+        });
+    ui.add(egui::DragValue::new(day).range(1..=max_day).prefix("Day "));
+}
+
 // Narrowest track width (in points) that fits the read-times radios and the
 // Clear button on one row, with room for the "Multiple times" count field.
 const TRACK_SIDES_MIN_WIDTH: f32 = 400.0;
@@ -565,6 +588,21 @@ const WINDOW_SIZE: [f32; 2] = [560.0, 820.0];
 // tightens its margins and dialogs shrink to fit the screen.
 const NARROW_SCREEN_WIDTH: f32 = 500.0;
 
+// A dialog's title with a close button pinned to its right. The title
+// wraps (rather than running under the close button) when the dialog is too
+// narrow for it, e.g. on a phone at a large UI scale. Returns true when the
+// close button was clicked.
+fn dialog_header(ui: &mut egui::Ui, title: &str) -> bool {
+    let (_, clicked) = egui::Sides::new().shrink_left().show(
+        ui,
+        |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(title).heading()).wrap());
+        },
+        |ui| close_button(ui).clicked(),
+    );
+    clicked
+}
+
 // Size a dialog's contents to its preferred minimum width, but never wider
 // than the screen allows (minus its 24-point side padding and a little
 // breathing room) — on a narrow screen, both the minimum and any long
@@ -933,11 +971,19 @@ impl BiblePlannerApp {
                 egui::vec2(ui.available_width(), 40.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    // Smaller on phone-width screens, where the full-size
-                    // title is wider than the screen itself.
-                    let title_size = if ui.available_width() < NARROW_SCREEN_WIDTH { 22.0 } else { 30.0 };
+                    // Shrunk as needed (e.g. on a phone at a large UI scale)
+                    // to fit beside the settings gear rather than being wider
+                    // than the screen itself.
+                    const TITLE: &str = "Bible Reading Planner";
+                    const GEAR_WIDTH: f32 = 36.0;
+                    let full_width = egui::WidgetText::from(egui::RichText::new(TITLE).size(30.0).strong())
+                        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body)
+                        .size()
+                        .x;
+                    let fit = ((ui.available_width() - GEAR_WIDTH) / full_width).min(1.0);
+                    let title_size = (30.0 * fit).max(12.0);
                     ui.label(
-                        egui::RichText::new("Bible Reading Planner")
+                        egui::RichText::new(TITLE)
                             .size(title_size)
                             .strong()
                             .color(accent),
@@ -992,49 +1038,37 @@ impl BiblePlannerApp {
                 contrast_radio_value(ui, &mut self.use_date_range, true, "Date range");
                 if self.use_date_range {
                     ui.indent("date_range_fields", |ui| {
-                        const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun",
-                                                    "Jul","Aug","Sep","Oct","Nov","Dec"];
-
                         // Clamp stored days to the real maximum for the selected month/year.
                         let start_max = days_in_month(self.start_year, self.start_month);
                         self.start_day = self.start_day.min(start_max);
                         let end_max = days_in_month(self.end_year, self.end_month);
                         self.end_day = self.end_day.min(end_max);
 
-                        // `Grid` lines up labels and controls in neat columns.
-                        egui::Grid::new("dates_grid").num_columns(4).show(ui, |ui| {
-                            ui.label("Start date:");
-                            ui.add(egui::DragValue::new(&mut self.start_year).range(2020..=2100));
-                            egui::ComboBox::from_id_salt("start_month")
-                                .width(50.0)
-                                // Tall enough to show all 12 months without scrolling
-                                // (the default max height only fits ~9).
-                                .height(300.0)
-                                .selected_text(MONTHS[(self.start_month - 1) as usize])
-                                .show_ui(ui, |ui| {
-                                    for (i, &name) in MONTHS.iter().enumerate() {
-                                        ui.selectable_value(&mut self.start_month, (i + 1) as u32, name);
-                                    }
-                                });
-                            ui.add(egui::DragValue::new(&mut self.start_day).range(1..=start_max).prefix("Day "));
-                            ui.end_row();
+                        if ui.available_width() >= DATE_GRID_MIN_WIDTH {
+                            // `Grid` lines up labels and controls in neat columns.
+                            egui::Grid::new("dates_grid").num_columns(4).show(ui, |ui| {
+                                ui.label("Start date:");
+                                date_controls(ui, "start_month", &mut self.start_year, &mut self.start_month, &mut self.start_day, start_max);
+                                ui.end_row();
 
+                                ui.label("End date:");
+                                date_controls(ui, "end_month", &mut self.end_year, &mut self.end_month, &mut self.end_day, end_max);
+                                ui.end_row();
+                            });
+                        } else {
+                            // Too narrow (e.g. a phone at a large UI scale)
+                            // for label and controls on one line — the
+                            // overflowing grid would widen the whole form,
+                            // pushing the Generate button off the screen.
+                            ui.label("Start date:");
+                            ui.horizontal_wrapped(|ui| {
+                                date_controls(ui, "start_month", &mut self.start_year, &mut self.start_month, &mut self.start_day, start_max);
+                            });
                             ui.label("End date:");
-                            ui.add(egui::DragValue::new(&mut self.end_year).range(2020..=2100));
-                            egui::ComboBox::from_id_salt("end_month")
-                                .width(50.0)
-                                // Tall enough to show all 12 months without scrolling
-                                // (the default max height only fits ~9).
-                                .height(300.0)
-                                .selected_text(MONTHS[(self.end_month - 1) as usize])
-                                .show_ui(ui, |ui| {
-                                    for (i, &name) in MONTHS.iter().enumerate() {
-                                        ui.selectable_value(&mut self.end_month, (i + 1) as u32, name);
-                                    }
-                                });
-                            ui.add(egui::DragValue::new(&mut self.end_day).range(1..=end_max).prefix("Day "));
-                            ui.end_row();
-                        });
+                            ui.horizontal_wrapped(|ui| {
+                                date_controls(ui, "end_month", &mut self.end_year, &mut self.end_month, &mut self.end_day, end_max);
+                            });
+                        }
 
                         ui.add_space(4.0);
                         // `horizontal` places widgets side-by-side on one line.
@@ -1251,23 +1285,14 @@ impl BiblePlannerApp {
         let modal = egui::Modal::new(egui::Id::new("settings_modal")).frame(frame).show(ctx, |ui| {
             fit_dialog_width(ui, 320.0);
             ui.add_space(8.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 24.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.heading("⚙ Settings");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if close_button(ui).clicked() {
-                            close = true;
-                        }
-                    });
-                },
-            );
+            if dialog_header(ui, "⚙ Settings") {
+                close = true;
+            }
             ui.add_space(8.0);
             ui.separator();
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Theme:");
                 contrast_radio_value(ui, &mut self.dark_mode, false, "Light");
                 contrast_radio_value(ui, &mut self.dark_mode, true, "Dark");
@@ -1276,7 +1301,7 @@ impl BiblePlannerApp {
             ui.separator();
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("UI scale:");
                 contrast_radio_value(ui, &mut self.ui_scale, 1.0, "Small");
                 contrast_radio_value(ui, &mut self.ui_scale, 1.2, "Medium");
@@ -1294,7 +1319,7 @@ impl BiblePlannerApp {
                     self.confirming_reset = true;
                 }
             } else {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("Erase all selections and settings?").weak());
                     if ui.small_button("Confirm").clicked() {
                         *self = Self::default();
@@ -1330,18 +1355,9 @@ impl BiblePlannerApp {
         let modal = egui::Modal::new(egui::Id::new("reading_plan_modal")).frame(frame).show(ctx, |ui| {
             fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 24.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.heading("📏 Bible Reading Plan");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if close_button(ui).clicked() {
-                            close = true;
-                        }
-                    });
-                },
-            );
+            if dialog_header(ui, "📏 Bible Reading Plan") {
+                close = true;
+            }
             ui.add_space(8.0);
             ui.separator();
 
@@ -1350,14 +1366,14 @@ impl BiblePlannerApp {
             if self.include_length {
                 ui.add_space(8.0);
                 ui.indent("reading_length_fields", |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Reading length shown as:");
                         contrast_radio_value(ui, &mut self.use_reading_minutes, false, "Word count");
                         contrast_radio_value(ui, &mut self.use_reading_minutes, true, "Minutes");
                     });
                     if self.use_reading_minutes {
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Reading speed:");
                             ui.add(
                                 egui::DragValue::new(&mut self.reading_speed_wpm)
@@ -1400,18 +1416,9 @@ impl BiblePlannerApp {
         let modal = egui::Modal::new(egui::Id::new("catchup_modal")).frame(frame).show(ctx, |ui| {
             fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 24.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.heading("⏱ Catch-up Days");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if close_button(ui).clicked() {
-                            close = true;
-                        }
-                    });
-                },
-            );
+            if dialog_header(ui, "⏱ Catch-up Days") {
+                close = true;
+            }
             ui.add_space(8.0);
             ui.separator();
 
@@ -1420,7 +1427,7 @@ impl BiblePlannerApp {
             if !self.catchup_after_books {
                 ui.add_space(4.0);
                 ui.indent("spread_catchup_fields", |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Extra catch-up days:");
                         ui.add(egui::DragValue::new(&mut self.extra_catchup_days).range(0..=3650));
                     });
@@ -1529,18 +1536,9 @@ impl BiblePlannerApp {
         let modal = egui::Modal::new(egui::Id::new("output_modal")).frame(frame).show(ctx, |ui| {
             fit_dialog_width(ui, 360.0);
             ui.add_space(8.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 24.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.heading("💾 Output");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if close_button(ui).clicked() {
-                            close = true;
-                        }
-                    });
-                },
-            );
+            if dialog_header(ui, "💾 Output") {
+                close = true;
+            }
             ui.add_space(8.0);
             ui.separator();
 
@@ -1549,7 +1547,7 @@ impl BiblePlannerApp {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Output folder:");
                     ui.label(egui::RichText::new(&self.output_dir).weak());
                     if ui.small_button("Browse...").clicked() {
@@ -1566,23 +1564,36 @@ impl BiblePlannerApp {
             }
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label("Output filename:");
-                // TextEdit has no visible border at rest by default (only on
-                // hover/focus), so give it a constant one here.
-                let border = ui.visuals().widgets.noninteractive.bg_stroke;
-                let corner_radius = ui.visuals().widgets.inactive.corner_radius;
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.custom_filename)
-                        .hint_text("leave blank for auto-generated name")
-                        .frame(
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin::symmetric(4, 2))
-                                .stroke(border)
-                                .corner_radius(corner_radius),
-                        ),
-                );
-            });
+            ui.label("Output filename:");
+            // TextEdit has no visible border at rest by default (only on
+            // hover/focus), so give it a constant one here.
+            let border = ui.visuals().widgets.noninteractive.bg_stroke;
+            let corner_radius = ui.visuals().widgets.inactive.corner_radius;
+            let filename_edit = ui.add(
+                egui::TextEdit::singleline(&mut self.custom_filename)
+                    .hint_text("leave blank for auto-generated name")
+                    .desired_width(f32::INFINITY)
+                    .frame(
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(4, 2))
+                            .stroke(border)
+                            .corner_radius(corner_radius),
+                    ),
+            );
+            // On a phone's browser, tapping an egui text field often doesn't
+            // bring up the on-screen keyboard — egui draws to a canvas, and
+            // mobile browsers only show the keyboard for a real input focused
+            // during the tap itself. The browser's own text prompt always
+            // does, so touch devices enter the filename through that instead.
+            #[cfg(target_arch = "wasm32")]
+            if filename_edit.clicked() && is_touch_device() {
+                filename_edit.surrender_focus();
+                if let Some(name) = prompt_text("Output filename (leave blank for an auto-generated name):", &self.custom_filename) {
+                    self.custom_filename = name;
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = filename_edit;
             #[cfg(not(target_arch = "wasm32"))]
             ui.label(egui::RichText::new(format!(".csv is added automatically; saved under {}/", self.output_dir)).weak());
             #[cfg(target_arch = "wasm32")]
@@ -1592,7 +1603,7 @@ impl BiblePlannerApp {
 
             ui.add_space(8.0);
             ui.add_enabled_ui(self.use_date_range, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     contrast_checkbox(ui, &mut self.export_ics, "Also export a calendar file (.ics) for Google/Apple Calendar");
                     if self.export_ics {
                         let info = ui.small_button("ℹ").on_hover_text("How to use the calendar file");
@@ -1969,10 +1980,24 @@ fn deliver_file(name: &str, content: &str, mime: &str) -> Result<String, Box<dyn
     Ok(name.to_string())
 }
 
+// Whether the browser is running on a touchscreen device (e.g. a phone).
+#[cfg(target_arch = "wasm32")]
+fn is_touch_device() -> bool {
+    web_sys::window().is_some_and(|w| w.navigator().max_touch_points() > 0)
+}
+
+// Ask for a line of text with the browser's own prompt dialog. None if
+// cancelled.
+#[cfg(target_arch = "wasm32")]
+fn prompt_text(message: &str, default: &str) -> Option<String> {
+    web_sys::window()?.prompt_with_message_and_default(message, default).ok().flatten()
+}
+
 // Trigger a browser download of `content` as a file named `name`: wrap it in
 // a `Blob`, point a hidden `<a download>` at an object URL for that blob,
 // and simulate a click — the standard way to hand the user a generated file
 // with no File System Access API support required.
+#[cfg(target_arch = "wasm32")]
 #[cfg(target_arch = "wasm32")]
 fn trigger_download(name: &str, content: &str, mime: &str) -> Result<(), Box<dyn Error>> {
     use eframe::wasm_bindgen::{JsCast, JsValue};
