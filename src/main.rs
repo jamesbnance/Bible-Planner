@@ -204,9 +204,12 @@ impl ReadingTrack {
                         state.weak_bg_fill = egui::Color32::TRANSPARENT;
                         state.bg_stroke = egui::Stroke::new(1.0, egui::Color32::TRANSPARENT);
                     }
-                    let response = ui.add(egui::Button::new("").min_size(egui::Vec2::splat(17.0)));
+                    // The tap target is larger than the chevron drawn in
+                    // it, so it's easy to hit on a touchscreen.
+                    let response = ui.add(egui::Button::new("").min_size(egui::Vec2::splat(TOUCH_TARGET_SIZE)));
                     let color = ui.style().interact(&response).fg_stroke.color;
-                    paint_chevron(ui, response.rect, !self.show_books, color);
+                    let icon_rect = egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(17.0));
+                    paint_chevron(ui, icon_rect, !self.show_books, color);
                     response
                 })
                 .inner
@@ -256,14 +259,19 @@ impl ReadingTrack {
     }
 }
 
+// Minimum size, in points, of the hit area of a small icon-only button, so
+// it's easy to tap on a touchscreen even though its icon is drawn smaller.
+const TOUCH_TARGET_SIZE: f32 = 28.0;
+
 // A dialog close ("X") button styled like a native window control: a plain
-// glyph in a small, borderless hit area, with a light gray circular
-// background that darkens slightly on hover. Painted by hand rather than
-// built from `Button` — its padding is derived from font metrics and isn't
-// reliably sized.
+// glyph with a light gray circular background that darkens slightly on
+// hover, in a borderless hit area larger than the circle itself for
+// touchscreens. Painted by hand rather than built from `Button` — its
+// padding is derived from font metrics and isn't reliably sized.
 fn close_button(ui: &mut egui::Ui) -> egui::Response {
-    let size = egui::vec2(12.0, 9.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (hit_rect, response) = ui.allocate_exact_size(egui::Vec2::splat(TOUCH_TARGET_SIZE), egui::Sense::click());
+    // The glyph area the circle and cross are sized from.
+    let rect = egui::Rect::from_center_size(hit_rect.center(), egui::vec2(12.0, 9.0));
     if ui.is_rect_visible(rect) {
         let dark_mode = ui.visuals().dark_mode;
         let base_fill = if dark_mode { egui::Color32::from_gray(60) } else { egui::Color32::from_gray(225) };
