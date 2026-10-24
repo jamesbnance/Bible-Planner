@@ -37,4 +37,7 @@ features = [
     "Blob", "BlobPropertyBag", "Url", "HtmlAnchorElement", "HtmlElement", "Node",
     # For persisting settings in the browser, since there's no filesystem.
     "Storage",
+    # For entering text on touch devices, where egui text fields may not
+    # bring up the on-screen keyboard.
+    "Navigator",
 ]
