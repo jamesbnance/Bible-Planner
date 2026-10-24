@@ -56,6 +56,10 @@ const BOOK_NAMES: [&str; 66] = [
     "Jude", "Revelation",
 ];
 
+// Narrowest track width (in points) that fits the read-times radios and the
+// Clear button on one row, with room for the "Multiple times" count field.
+const TRACK_SIDES_MIN_WIDTH: f32 = 400.0;
+
 // Quick-select groups: (button label, first 0-based index, last 0-based index)
 const BOOK_GROUPS: &[(&str, usize, usize)] = &[
     ("Entire Bible",   0,  65),
@@ -134,32 +138,44 @@ impl ReadingTrack {
         });
 
         ui.add_space(4.0);
-        egui::Sides::new().show(
-            ui,
-            |ui| {
-                contrast_radio_value(ui, &mut self.read_times, 1, "Once");
-                contrast_radio_value(ui, &mut self.read_times, 2, "Twice");
-                let multi = self.read_times >= 3;
-                if contrast_radio(ui, multi, "Multiple times").clicked() && !multi {
-                    self.read_times = 3;
-                }
-                if multi {
-                    ui.add(egui::DragValue::new(&mut self.read_times).range(3u32..=52));
-                }
-            },
-            |ui| {
-                // Styled as a plain gray outline so it reads as a distinct,
-                // less-frequent action than the filled quick-select pills.
-                let gray = egui::Color32::from_gray(130);
-                let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
-                if outline_button(ui, "Clear", gray, gray_hover).clicked() {
-                    self.selected = vec![false; 66];
-                }
-            },
-        );
+        let read_times_radios = |ui: &mut egui::Ui, read_times: &mut u32| {
+            contrast_radio_value(ui, read_times, 1, "Once");
+            contrast_radio_value(ui, read_times, 2, "Twice");
+            let multi = *read_times >= 3;
+            if contrast_radio(ui, multi, "Multiple times").clicked() && !multi {
+                *read_times = 3;
+            }
+            if multi {
+                ui.add(egui::DragValue::new(read_times).range(3u32..=52));
+            }
+        };
+        let clear_button = |ui: &mut egui::Ui, selected: &mut Vec<bool>| {
+            // Styled as a plain gray outline so it reads as a distinct,
+            // less-frequent action than the filled quick-select pills.
+            let gray = egui::Color32::from_gray(130);
+            let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
+            if outline_button(ui, "Clear", gray, gray_hover).clicked() {
+                *selected = vec![false; 66];
+            }
+        };
+        // `Sides` keeps Clear pinned to the right edge, but can't wrap — on a
+        // phone-width screen it would overlap itself and push the whole form
+        // wider than the screen — so narrow tracks wrap the row instead.
+        if ui.available_width() >= TRACK_SIDES_MIN_WIDTH {
+            egui::Sides::new().show(
+                ui,
+                |ui| read_times_radios(ui, &mut self.read_times),
+                |ui| clear_button(ui, &mut self.selected),
+            );
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                read_times_radios(ui, &mut self.read_times);
+                clear_button(ui, &mut self.selected);
+            });
+        }
 
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             contrast_radio_value(ui, &mut self.fixed_pace, false, "Balance across duration");
             contrast_radio_value(ui, &mut self.fixed_pace, true, "Fixed chapters/day");
             if self.fixed_pace {
@@ -188,9 +204,12 @@ impl ReadingTrack {
                         state.weak_bg_fill = egui::Color32::TRANSPARENT;
                         state.bg_stroke = egui::Stroke::new(1.0, egui::Color32::TRANSPARENT);
                     }
-                    let response = ui.add(egui::Button::new("").min_size(egui::Vec2::splat(17.0)));
+                    // The tap target is larger than the chevron drawn in
+                    // it, so it's easy to hit on a touchscreen.
+                    let response = ui.add(egui::Button::new("").min_size(egui::Vec2::splat(TOUCH_TARGET_SIZE)));
                     let color = ui.style().interact(&response).fg_stroke.color;
-                    paint_chevron(ui, response.rect, !self.show_books, color);
+                    let icon_rect = egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(17.0));
+                    paint_chevron(ui, icon_rect, !self.show_books, color);
                     response
                 })
                 .inner
@@ -240,14 +259,19 @@ impl ReadingTrack {
     }
 }
 
+// Minimum size, in points, of the hit area of a small icon-only button, so
+// it's easy to tap on a touchscreen even though its icon is drawn smaller.
+const TOUCH_TARGET_SIZE: f32 = 28.0;
+
 // A dialog close ("X") button styled like a native window control: a plain
-// glyph in a small, borderless hit area, with a light gray circular
-// background that darkens slightly on hover. Painted by hand rather than
-// built from `Button` — its padding is derived from font metrics and isn't
-// reliably sized.
+// glyph with a light gray circular background that darkens slightly on
+// hover, in a borderless hit area larger than the circle itself for
+// touchscreens. Painted by hand rather than built from `Button` — its
+// padding is derived from font metrics and isn't reliably sized.
 fn close_button(ui: &mut egui::Ui) -> egui::Response {
-    let size = egui::vec2(12.0, 9.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (hit_rect, response) = ui.allocate_exact_size(egui::Vec2::splat(TOUCH_TARGET_SIZE), egui::Sense::click());
+    // The glyph area the circle and cross are sized from.
+    let rect = egui::Rect::from_center_size(hit_rect.center(), egui::vec2(12.0, 9.0));
     if ui.is_rect_visible(rect) {
         let dark_mode = ui.visuals().dark_mode;
         let base_fill = if dark_mode { egui::Color32::from_gray(60) } else { egui::Color32::from_gray(225) };
@@ -276,6 +300,7 @@ fn default_dark_mode() -> bool { true }
 fn default_ui_scale() -> f32 { 1.2 }
 fn default_reading_speed_wpm() -> u32 { 200 }
 fn default_output_dir() -> String { "reading_plan".to_string() }
+fn default_catchup_after_book_counts() -> Vec<u32> { vec![0; 66] }
 
 // A small read-only "chip" naming one selected book — shown next to the
 // collapsed book list so the current selection stays visible without
@@ -344,6 +369,8 @@ fn outline_button(ui: &mut egui::Ui, label: &str, base: egui::Color32, hover: eg
 fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui::Response {
     let dark_mode = ui.visuals().dark_mode;
     let is_checked = *checked;
+    let wrap_mode = label_wrap_mode(ui, label);
+    wrap_row_if_needed(ui, label);
     ui.horizontal(|ui| {
         // The box and label are drawn as two separate widgets rather than one
         // `ui.checkbox()` call: egui derives both the checkmark color and the
@@ -370,7 +397,7 @@ fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui
         })
         .inner;
 
-        let text_response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        let text_response = ui.add(egui::Label::new(label).wrap_mode(wrap_mode).sense(egui::Sense::click()));
         if text_response.clicked() {
             *checked = !*checked;
             response.mark_changed();
@@ -380,10 +407,55 @@ fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui
     .inner
 }
 
+// contrast_checkbox/contrast_radio draw their box and label inside a nested
+// `ui.horizontal`, which a parent `horizontal_wrapped` row places at its
+// cursor as one unit without ever wrapping it — so on a narrow (phone)
+// screen a row of them ran off the edge, widening the whole form with it.
+// Starting a new row first whenever the control won't fit restores wrapping.
+fn wrap_row_if_needed(ui: &mut egui::Ui, label: &str) {
+    let layout = ui.layout();
+    if !(layout.is_horizontal() && layout.main_wrap()) {
+        return;
+    }
+    let at_row_start = ui.cursor().min.x <= ui.max_rect().min.x + 1.0;
+    if at_row_start {
+        return;
+    }
+    if control_width(ui, label) > ui.available_size_before_wrap().x {
+        ui.end_row();
+    }
+}
+
+// Unwrapped width of a contrast_checkbox/contrast_radio: box, label, and
+// the spacing around them.
+fn control_width(ui: &egui::Ui, label: &str) -> f32 {
+    let text_width = egui::WidgetText::from(label)
+        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body)
+        .size()
+        .x;
+    let spacing = ui.spacing();
+    spacing.icon_width + 2.0 * spacing.button_padding.x + 2.0 * spacing.item_spacing.x + text_width
+}
+
+// A control's label normally stays on one line, but wraps when it's wider
+// than the whole area it's in (e.g. a long option in a dialog on a phone
+// screen) rather than overflowing it. Measured against the full area, not
+// the space left at the cursor: in a Grid, a cell's space left can be
+// near zero on the first frame, which would wrap a label to a letter a line.
+fn label_wrap_mode(ui: &egui::Ui, label: &str) -> egui::TextWrapMode {
+    if control_width(ui, label) > ui.max_rect().width() {
+        egui::TextWrapMode::Wrap
+    } else {
+        egui::TextWrapMode::Extend
+    }
+}
+
 // A radio button styled to match contrast_checkbox — solid accent fill with
 // a light inner dot instead of the default thin ring/dot.
 fn contrast_radio(ui: &mut egui::Ui, checked: bool, label: &str) -> egui::Response {
     let dark_mode = ui.visuals().dark_mode;
+    let wrap_mode = label_wrap_mode(ui, label);
+    wrap_row_if_needed(ui, label);
     ui.horizontal(|ui| {
         let radio_response = ui.scope(|ui| {
             if checked {
@@ -403,7 +475,7 @@ fn contrast_radio(ui: &mut egui::Ui, checked: bool, label: &str) -> egui::Respon
         })
         .inner;
 
-        let text_response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        let text_response = ui.add(egui::Label::new(label).wrap_mode(wrap_mode).sense(egui::Sense::click()));
         radio_response.union(text_response)
     })
     .inner
@@ -427,8 +499,12 @@ fn colored_button(ui: &mut egui::Ui, label: &str, base: egui::Color32, min_size:
         widgets.inactive.weak_bg_fill = base;
         widgets.hovered.weak_bg_fill = shade(base, 20);
         widgets.active.weak_bg_fill = shade(base, -20);
+        // A button's content otherwise follows the surrounding layout's
+        // alignment (usually left) when `min_size` makes it wider than the
+        // label; a growing spacer on each side keeps the label centered.
+        let text = egui::RichText::new(label).color(egui::Color32::WHITE).size(16.0);
         ui.add(
-            egui::Button::new(egui::RichText::new(label).color(egui::Color32::WHITE).size(16.0))
+            egui::Button::new((egui::Atom::grow(), text, egui::Atom::grow()))
                 .min_size(min_size)
                 .corner_radius(12.0),
         )
@@ -484,6 +560,20 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 // physical window size would leave fewer usable points at higher scales,
 // requiring the user to manually widen/heighten the window.
 const WINDOW_SIZE: [f32; 2] = [560.0, 820.0];
+
+// Below this many points of width (e.g. a phone held upright), the layout
+// tightens its margins and dialogs shrink to fit the screen.
+const NARROW_SCREEN_WIDTH: f32 = 500.0;
+
+// Size a dialog's contents to its preferred minimum width, but never wider
+// than the screen allows (minus its 24-point side padding and a little
+// breathing room) — on a narrow screen, both the minimum and any long
+// wrapping text would otherwise push the dialog off the screen's edge.
+fn fit_dialog_width(ui: &mut egui::Ui, preferred_min: f32) {
+    let max_width = (ui.ctx().content_rect().width() - 2.0 * 24.0 - 16.0).max(0.0);
+    ui.set_max_width(max_width);
+    ui.set_min_width(preferred_min.min(max_width));
+}
 
 // Key settings are saved under, whether that's a browser's localStorage (web)
 // or a file of the same name (native).
@@ -627,8 +717,15 @@ struct BiblePlannerApp {
     export_ics: bool,
     #[serde(default)]
     extra_catchup_days: i32,
+    // false = spread `extra_catchup_days` evenly across the schedule; true =
+    // instead insert catch-up days right after specific books, per
+    // `catchup_after_book_counts`. The two are never combined.
     #[serde(default)]
-    catchup_after_long_books: bool,
+    catchup_after_books: bool,
+    // Catch-up days to insert after each book (indexed like BOOK_NAMES), 0
+    // meaning none — applied after every pass of that book, in every track.
+    #[serde(default = "default_catchup_after_book_counts")]
+    catchup_after_book_counts: Vec<u32>,
 
     // Session-only state — not persisted
     #[serde(skip)]
@@ -651,6 +748,10 @@ struct BiblePlannerApp {
     show_reading_plan_dialog: bool,
     #[serde(skip)]
     show_catchup_dialog: bool,
+    // Whether the catch-up dialog shows the full book list for choosing
+    // books to follow with catch-up days, or just a summary of the choices.
+    #[serde(skip)]
+    editing_catchup_books: bool,
     #[serde(skip)]
     show_output_dialog: bool,
     #[serde(skip)]
@@ -692,7 +793,8 @@ impl Default for BiblePlannerApp {
             output_dir: default_output_dir(),
             export_ics: false,
             extra_catchup_days: 0,
-            catchup_after_long_books: false,
+            catchup_after_books: false,
+            catchup_after_book_counts: default_catchup_after_book_counts(),
             custom_filename: String::new(),
             last_output: None,
             last_ics_output: None,
@@ -703,6 +805,7 @@ impl Default for BiblePlannerApp {
             show_settings: false,
             show_reading_plan_dialog: false,
             show_catchup_dialog: false,
+            editing_catchup_books: false,
             show_output_dialog: false,
             applied_ui_scale: None,
             pending_catchup_warning: None,
@@ -725,17 +828,23 @@ impl eframe::App for BiblePlannerApp {
             egui::Visuals::light()
         });
         if self.applied_ui_scale != Some(self.ui_scale) {
+            // The UI scale is applied as a zoom factor — a multiple of the
+            // screen's own pixel density — rather than as an absolute
+            // pixels_per_point. An absolute value ignores the density
+            // entirely: on a 3x iPhone screen, 1.2 pixels per point drew the
+            // whole app at 40% of its normal size.
+            //
             // Scale the window's current logical size by the change in scale,
             // instead of resetting to a fixed size — that keeps a pinned/
             // snapped window's position and proportions instead of snapping
             // it back to a default box that can spill past the pinned area.
-            let old_scale = ui.ctx().pixels_per_point();
+            let old_scale = ui.ctx().zoom_factor();
             let current_size = ui
                 .ctx()
                 .input(|i| i.viewport().inner_rect)
                 .map_or(egui::Vec2::from(WINDOW_SIZE), |r| r.size());
             let new_size = current_size * (self.ui_scale / old_scale);
-            ui.ctx().set_pixels_per_point(self.ui_scale);
+            ui.ctx().set_zoom_factor(self.ui_scale);
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::InnerSize(new_size));
             self.applied_ui_scale = Some(self.ui_scale);
@@ -749,19 +858,23 @@ impl eframe::App for BiblePlannerApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).fill(canvas_fill).inner_margin(0))
             .show(ui, |ui| {
+                // Phone-width screens get slimmer side margins so the form
+                // fills nearly the whole width instead of losing a chunk of
+                // an already-narrow screen to empty space.
+                let side_margin = if ui.available_width() < NARROW_SCREEN_WIDTH { 6 } else { 20 };
                 egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(20, 16))
+                    .inner_margin(egui::Margin::symmetric(side_margin, 16))
                     .show(ui, |ui| {
                         // Cap the form to a comfortable reading width and
                         // center it, rather than letting it stretch
                         // edge-to-edge on wide (e.g. desktop browser) windows.
                         // egui's own sizes are all in logical points, which
-                        // grow in on-screen pixels as the UI scale goes up —
-                        // dividing by pixels_per_point keeps the cap at a
-                        // constant 1000 screen pixels at any scale, rather
-                        // than 1000 points (1600 screen pixels at 1.6x).
+                        // grow on screen as the UI scale goes up — dividing
+                        // by the zoom factor keeps the cap at a constant 1000
+                        // screen (CSS) pixels at any scale, rather than 1000
+                        // points (1600 screen pixels at 1.6x).
                         const MAX_CONTENT_WIDTH_PX: f32 = 1000.0;
-                        let max_content_width = MAX_CONTENT_WIDTH_PX / ui.ctx().pixels_per_point();
+                        let max_content_width = MAX_CONTENT_WIDTH_PX / ui.ctx().zoom_factor();
                         let content_width = ui.available_width().min(max_content_width);
                         let margin = (ui.available_width() - content_width) / 2.0;
                         // Plain `ui.horizontal` only allocates a single
@@ -820,9 +933,12 @@ impl BiblePlannerApp {
                 egui::vec2(ui.available_width(), 40.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
+                    // Smaller on phone-width screens, where the full-size
+                    // title is wider than the screen itself.
+                    let title_size = if ui.available_width() < NARROW_SCREEN_WIDTH { 22.0 } else { 30.0 };
                     ui.label(
                         egui::RichText::new("Bible Reading Planner")
-                            .size(30.0)
+                            .size(title_size)
                             .strong()
                             .color(accent),
                     );
@@ -852,6 +968,7 @@ impl BiblePlannerApp {
                         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
                         .corner_radius(4.0)
                         .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
                             if track.show(ui, idx, removable) {
                                 to_remove = Some(idx);
                             }
@@ -921,7 +1038,7 @@ impl BiblePlannerApp {
 
                         ui.add_space(4.0);
                         // `horizontal` places widgets side-by-side on one line.
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Skip weekdays:");
                             let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
                             for (i, name) in names.iter().enumerate() {
@@ -958,6 +1075,7 @@ impl BiblePlannerApp {
                 ui.add_space(6.0);
                 if ui.add_sized(row_size, egui::Button::new("Configure Catch-up Days...")).clicked() {
                     self.show_catchup_dialog = true;
+                    self.editing_catchup_books = !self.catchup_after_book_counts.iter().any(|&count| count > 0);
                 }
                 ui.add_space(6.0);
                 if ui.add_sized(row_size, egui::Button::new("Configure Output...")).clicked() {
@@ -1131,7 +1249,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("settings_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(320.0);
+            fit_dialog_width(ui, 320.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1210,7 +1328,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("reading_plan_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(340.0);
+            fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1268,8 +1386,8 @@ impl BiblePlannerApp {
         }
     }
 
-    // Catch-up Days dialog: how many extra days to add and whether long
-    // books automatically get one, both previously inline in Options.
+    // Catch-up Days dialog: either a number of extra days spread evenly
+    // across the schedule, or specific books to follow with catch-up days.
     fn show_catchup_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_catchup_dialog {
             return;
@@ -1280,7 +1398,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("catchup_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(340.0);
+            fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1298,18 +1416,97 @@ impl BiblePlannerApp {
             ui.separator();
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label("Extra catch-up days:");
-                ui.add(egui::DragValue::new(&mut self.extra_catchup_days).range(0..=3650));
-            });
-            ui.label(
-                egui::RichText::new("Spread evenly across the schedule; shortens the reading, not the plan.").weak(),
-            );
-            ui.add_space(8.0);
-            ui.separator();
+            contrast_radio_value(ui, &mut self.catchup_after_books, false, "Spread extra catch-up days evenly");
+            if !self.catchup_after_books {
+                ui.add_space(4.0);
+                ui.indent("spread_catchup_fields", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Extra catch-up days:");
+                        ui.add(egui::DragValue::new(&mut self.extra_catchup_days).range(0..=3650));
+                    });
+                    ui.label(
+                        egui::RichText::new("Spread evenly across the schedule; shortens the reading, not the plan.").weak(),
+                    );
+                });
+            }
 
             ui.add_space(8.0);
-            contrast_checkbox(ui, &mut self.catchup_after_long_books, "Add a catch-up day after longer books");
+            if contrast_radio_value(ui, &mut self.catchup_after_books, true, "Insert catch-up days after selected books").clicked() {
+                self.editing_catchup_books = !self.catchup_after_book_counts.iter().any(|&count| count > 0);
+            }
+            if self.catchup_after_books {
+                // A config saved by an older version may not have one entry
+                // per book.
+                self.catchup_after_book_counts.resize(66, 0);
+                ui.add_space(4.0);
+                ui.indent("after_books_catchup_fields", |ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            "Added after every pass of the book, in every track; shortens the reading, not the plan.",
+                        )
+                        .weak(),
+                    );
+                    ui.add_space(4.0);
+                    if !self.editing_catchup_books {
+                        // Once saved, the book list collapses to a one-line
+                        // summary of the choices, with Edit to reopen it.
+                        let chosen: Vec<(&str, u32)> = BOOK_NAMES.iter()
+                            .zip(&self.catchup_after_book_counts)
+                            .filter(|&(_, &count)| count > 0)
+                            .map(|(&name, &count)| (name, count))
+                            .collect();
+                        let total: u32 = chosen.iter().map(|&(_, count)| count).sum();
+                        let summary = if chosen.is_empty() {
+                            "No catch-up days added.".to_string()
+                        } else {
+                            let books: Vec<String> = chosen.iter()
+                                .map(|&(name, count)| if count > 1 { format!("{} (×{})", name, count) } else { name.to_string() })
+                                .collect();
+                            format!(
+                                "{} catch-up day{} added after {}",
+                                total,
+                                if total == 1 { "" } else { "s" },
+                                books.join(", "),
+                            )
+                        };
+                        ui.label(summary);
+                        ui.add_space(4.0);
+                        if ui.button("Edit books...").clicked() {
+                            self.editing_catchup_books = true;
+                        }
+                        return;
+                    }
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        egui::Grid::new("catchup_after_books_grid").num_columns(2).show(ui, |ui| {
+                            for (i, &name) in BOOK_NAMES.iter().enumerate() {
+                                let count = &mut self.catchup_after_book_counts[i];
+                                let mut checked = *count > 0;
+                                if contrast_checkbox(ui, &mut checked, name).changed() {
+                                    *count = if checked { 1 } else { 0 };
+                                }
+                                if checked {
+                                    ui.add(egui::DragValue::new(count).range(1u32..=30).suffix(" days"));
+                                } else {
+                                    ui.label("");
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if colored_button(ui, "Save", egui::Color32::from_rgb(0, 92, 128), egui::vec2(80.0, 28.0)).clicked() {
+                            self.editing_catchup_books = false;
+                        }
+                        // Same plain gray outline as a track's Clear button.
+                        let gray = egui::Color32::from_gray(130);
+                        let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
+                        if outline_button(ui, "Clear", gray, gray_hover).clicked() {
+                            self.catchup_after_book_counts = default_catchup_after_book_counts();
+                        }
+                    });
+                });
+            }
             ui.add_space(8.0);
         });
 
@@ -1330,7 +1527,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("output_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(360.0);
+            fit_dialog_width(ui, 360.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1437,7 +1634,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("catchup_warning_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(340.0);
+            fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
             ui.heading("Mostly Catch-up Days");
             ui.add_space(8.0);
@@ -1477,13 +1674,15 @@ impl BiblePlannerApp {
     // Returns a warning message if any track's selected books have far
     // fewer chapters than the plan's duration — meaning a large share of
     // the plan's days would silently become catch-up days.
-    fn catchup_warning(&self, book_indexes: &[Vec<i32>], duration: i32) -> Option<String> {
-        if duration <= 0 {
-            return None;
-        }
-
-        let mut worst: Option<(i32, f64)> = None;
-        for book_index in book_indexes {
+    // Each track is paired with the number of days left for its reading
+    // once its deliberately-requested catch-up days are set aside.
+    fn catchup_warning(&self, tracks: &[(Vec<i32>, i32)]) -> Option<String> {
+        let mut worst: Option<(i32, i32, f64)> = None;
+        for (book_index, duration) in tracks {
+            let duration = *duration;
+            if duration <= 0 {
+                continue;
+            }
             let Ok(bible_data) = get_bible_chapter_data(book_index.clone(), true) else { continue; };
             let total_chapters: i32 = bible_data.iter().map(|b| b.chapters).sum();
             if total_chapters <= 0 {
@@ -1491,18 +1690,31 @@ impl BiblePlannerApp {
             }
             let catchup_days = (duration - total_chapters).max(0);
             let ratio = catchup_days as f64 / duration as f64;
-            if ratio >= 0.25 && worst.map_or(true, |(_, best_ratio)| ratio > best_ratio) {
-                worst = Some((total_chapters, ratio));
+            if ratio >= 0.1 && worst.map_or(true, |(_, _, best_ratio)| ratio > best_ratio) {
+                worst = Some((total_chapters, duration, ratio));
             }
         }
 
-        worst.map(|(chapters, _)| {
+        worst.map(|(chapters, duration, _)| {
             format!(
                 "The number of chapters ({}) is significantly less than the number of reading days ({}). \
-                 Most days would be catch-up days with nothing new to read.",
+                 A large share of the plan's days would be catch-up days with nothing new to read.",
                 chapters, duration
             )
         })
+    }
+
+    // Catch-up days to insert after each book, keyed by title — empty unless
+    // that mode is selected.
+    fn catchup_after_book_map(&self) -> HashMap<String, u32> {
+        if !self.catchup_after_books {
+            return HashMap::new();
+        }
+        BOOK_NAMES.iter()
+            .zip(&self.catchup_after_book_counts)
+            .filter(|&(_, &count)| count > 0)
+            .map(|(&name, &count)| (name.to_string(), count))
+            .collect()
     }
 
     fn generate_plan(&mut self) {
@@ -1562,23 +1774,39 @@ impl BiblePlannerApp {
             (self.duration, Vec::new())
         };
 
-        if self.extra_catchup_days >= duration {
+        let extra_catchup_days = if self.catchup_after_books { 0 } else { self.extra_catchup_days };
+        let catchup_after = self.catchup_after_book_map();
+
+        if extra_catchup_days >= duration {
             self.set_status("Extra catch-up days must be less than the plan's total duration.", true);
             return;
         }
 
+        // Every length-balanced track paired with how many days are left for
+        // its reading after its requested catch-up days — those after
+        // selected books depend on which books (and how many passes) each
+        // track has. Fixed-pace tracks don't get catch-up days at all.
+        let balanced_content_durations: Vec<(Vec<i32>, i32)> = track_plans.iter()
+            .filter(|&(_, fixed_pace, _)| !fixed_pace)
+            .map(|(indexes, _, _)| {
+                let after_books: i32 = indexes.iter()
+                    .filter_map(|&i| catchup_after.get(BOOK_NAMES[(i - 1) as usize]))
+                    .map(|&count| count as i32)
+                    .sum();
+                (indexes.clone(), duration - extra_catchup_days - after_books)
+            })
+            .collect();
+        if balanced_content_durations.iter().any(|&(_, content_duration)| content_duration < 1) {
+            self.set_status("Catch-up days after the selected books must be fewer than the plan's total duration.", true);
+            return;
+        }
+
         if !skip_catchup_check {
-            // Deliberately-requested extra catch-up days shouldn't count
-            // against the "far fewer chapters than days" warning — that
-            // warning is about an unintentional mismatch, not a choice the
-            // user already made. Fixed-pace tracks don't get catch-up days
-            // at all, so they're excluded from this check too.
-            let content_duration = (duration - self.extra_catchup_days).max(1);
-            let balanced_book_indexes: Vec<Vec<i32>> = track_plans.iter()
-                .filter(|&(_, fixed_pace, _)| !fixed_pace)
-                .map(|(indexes, _, _)| indexes.clone())
-                .collect();
-            if let Some(message) = self.catchup_warning(&balanced_book_indexes, content_duration) {
+            // Deliberately-requested catch-up days shouldn't count against
+            // the "far fewer chapters than days" warning — that warning is
+            // about an unintentional mismatch, not a choice the user already
+            // made — so it's checked against the remaining content duration.
+            if let Some(message) = self.catchup_warning(&balanced_content_durations) {
                 self.pending_catchup_warning = Some(message);
                 return;
             }
@@ -1638,8 +1866,8 @@ impl BiblePlannerApp {
                     bible_data,
                     chapter_data.clone(),
                     duration,
-                    self.extra_catchup_days,
-                    self.catchup_after_long_books,
+                    extra_catchup_days,
+                    &catchup_after,
                 )
             };
 
@@ -2312,54 +2540,119 @@ fn adjust_days(titles_chapters_days: Vec<ChaptersDays>, bible_data: Vec<ChapterD
   new_tcds
 }
 
-// Interleave `num_catchup` "Catch-up day" placeholders among `entries`
-// (already one per calendar day, in order), spreading them as evenly as
-// possible across the combined schedule and renumbering `.days` to be
-// sequential across the result.
+// Interleave `num_catchup` "Catch-up day" placeholders among `entries` (one
+// real reading day per entry, in order), renumbering `.days` to be
+// sequential across the result. Every catch-up day lands between two
+// books — never splitting a single book's multi-day reading — and whichever
+// one's even spread lands nearest the Old Testament/New Testament
+// transition (right after Malachi) is snapped to that exact boundary
+// instead, if it's close enough to plausibly be "the one near there".
 //
-// The previous approach inserted a catch-up day only at points where the
-// book title changed, spaced by a fixed index gap. But inserting one always
-// creates a fresh "title changed" boundary immediately after itself (a
-// Catch-up day next to whatever real reading follows), which re-satisfied
-// the insertion condition on the very next step — so instead of spreading
-// out, catch-up days cascaded into one long unbroken run. This proportional
-// interleave has no such self-triggering: it only ever compares each type's
-// share of days emitted so far against its target share of the whole.
+// Earlier approaches here either inserted at a fixed index gap (which
+// cascaded into one long unbroken run of catch-up days, since inserting one
+// creates a fresh "title changed" boundary right after itself that
+// re-satisfies the same insertion condition on the very next step), or
+// placed catch-up days at raw evenly-spaced calendar-day positions with no
+// regard for whether that position fell in the middle of a book's reading.
 fn interleave_catchup_days(entries: Vec<ChaptersDays>, num_catchup: i32) -> Vec<ChaptersDays> {
     if num_catchup <= 0 {
         return entries;
     }
+    if entries.is_empty() {
+        return (1..=num_catchup)
+            .map(|day| ChaptersDays { titles: vec!["Catch-up day".to_string()], chapters: 0, days: day })
+            .collect();
+    }
 
-    let real_total = entries.len() as i64;
-    let catchup_total = num_catchup as i64;
-    let mut result = Vec::with_capacity((real_total + catchup_total) as usize);
-    let mut real_iter = entries.into_iter();
-    let mut real_emitted = 0i64;
-    let mut catchup_emitted = 0i64;
-    let mut day = 1i32;
+    let real_total = entries.len();
+    let catchup_total = num_catchup as usize;
 
-    while real_emitted < real_total || catchup_emitted < catchup_total {
-        // Emit whichever type is proportionally furthest behind its target
-        // share (real_emitted/real_total vs catchup_emitted/catchup_total),
-        // compared via cross-multiplication to avoid floating point.
-        let take_real = if real_emitted >= real_total {
-            false
-        } else if catchup_emitted >= catchup_total {
-            true
-        } else {
-            real_emitted * catchup_total <= catchup_emitted * real_total
-        };
+    // Every index i here means "insert after entries[i]". Valid points are
+    // only where the book changes, plus the very end of the plan as a
+    // fallback for a single-book plan with no book boundaries at all.
+    let mut boundaries: Vec<usize> = (0..real_total - 1)
+        .filter(|&i| entries[i].titles != entries[i + 1].titles)
+        .collect();
+    boundaries.push(real_total - 1);
 
-        if take_real {
-            let mut entry = real_iter.next().expect("real_emitted < real_total");
-            entry.days = day;
-            result.push(entry);
-            real_emitted += 1;
-        } else {
-            result.push(ChaptersDays { titles: vec!["Catch-up day".to_string()], chapters: 0, days: day });
-            catchup_emitted += 1;
+    // Every point in this track's sequence where the Old Testament ends and
+    // the New Testament begins — there can be more than one if the track
+    // reads through more than once. `.last()`/`.first()` (rather than
+    // requiring a single-book entry) because a short book like Malachi can
+    // be combined with neighboring books onto one shared day.
+    let ot_nt_boundaries: Vec<usize> = (0..real_total - 1)
+        .filter(|&i| {
+            entries[i].titles.last().is_some_and(|t| t == "Malachi")
+                && entries[i + 1].titles.first().is_some_and(|t| t == "Matthew")
+        })
+        .collect();
+
+    // Evenly spaced ideal insertion points among the real content — e.g. 2
+    // catch-up days among 363 real days target roughly the 1/3 and 2/3
+    // marks — before snapping each to an actual boundary below.
+    let slot_width = real_total as f64 / (catchup_total as f64 + 1.0);
+    let ideal_targets: Vec<f64> = (1..=catchup_total).map(|k| k as f64 * slot_width).collect();
+    let distance = |a: f64, b: f64| (a - b).abs();
+
+    let mut used: HashSet<usize> = HashSet::new();
+    let mut assigned: Vec<Option<usize>> = vec![None; catchup_total];
+
+    // Give the OT/NT break to whichever catch-up day's ideal target is
+    // closest to it, but only if that's within one slot's width — i.e. only
+    // when one of them is actually in its neighborhood, rather than always
+    // dragging some catch-up day there from arbitrarily far away.
+    for &boundary in &ot_nt_boundaries {
+        let nearest_k = ideal_targets
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| assigned[*k].is_none())
+            .min_by(|(_, &a), (_, &b)| distance(a, boundary as f64).total_cmp(&distance(b, boundary as f64)))
+            .map(|(k, _)| k);
+        if let Some(k) = nearest_k {
+            if distance(ideal_targets[k], boundary as f64) <= slot_width / 2.0 {
+                assigned[k] = Some(boundary);
+                used.insert(boundary);
+            }
         }
+    }
+
+    // Every remaining catch-up day snaps to its own nearest available book
+    // boundary — falling back to the nearest boundary at all (stacking
+    // catch-up days together) only if there are more catch-up days than
+    // distinct boundaries to spread them across.
+    for (k, &target) in ideal_targets.iter().enumerate() {
+        if assigned[k].is_some() {
+            continue;
+        }
+        let nearest_unused = boundaries
+            .iter()
+            .filter(|b| !used.contains(b))
+            .min_by(|&&a, &&b| distance(a as f64, target).total_cmp(&distance(b as f64, target)));
+        let nearest_any = || boundaries.iter().min_by(|&&a, &&b| distance(a as f64, target).total_cmp(&distance(b as f64, target)));
+        if let Some(&b) = nearest_unused.or_else(nearest_any) {
+            assigned[k] = Some(b);
+            used.insert(b);
+        }
+    }
+
+    // Walk the real entries in order, inserting a catch-up day right after
+    // any entry whose index got assigned one (several can land on the same
+    // index if boundaries had to be reused above).
+    let mut insert_counts: HashMap<usize, usize> = HashMap::new();
+    for i in assigned.into_iter().flatten() {
+        *insert_counts.entry(i).or_insert(0) += 1;
+    }
+
+    let mut result = Vec::with_capacity(real_total + catchup_total);
+    let mut day = 1i32;
+    for (i, mut entry) in entries.into_iter().enumerate() {
+        entry.days = day;
         day += 1;
+        result.push(entry);
+        for _ in 0..insert_counts.get(&i).copied().unwrap_or(0) {
+            result.push(ChaptersDays { titles: vec!["Catch-up day".to_string()], chapters: 0, days: day });
+            day += 1;
+        }
     }
 
     result
@@ -2383,10 +2676,6 @@ fn insert_new_element(new_tcds: &mut Vec<ChaptersDays>, i: usize, title: String,
       new_tcds[j].days += 1;
   }
 }
-
-// A book that would take at least this many days to read on its own counts
-// as "long" for the optional catch-up-day-after-long-books feature.
-const LONG_BOOK_DAY_THRESHOLD: i32 = 5;
 
 // Build a track's plan by reading a fixed number of chapters every day,
 // instead of balancing the selected books' length across `duration`. Chapter
@@ -2425,56 +2714,41 @@ fn build_fixed_pace_plan(chapter_data: Vec<ChapterData>, chapters_per_day: u32) 
     plan
 }
 
-// Build one track's day-by-day plan, optionally reserving some days as
-// catch-up days — either a user-requested count spread evenly across the
-// whole schedule, or one placed right after each completed run of a book
-// long enough to cross LONG_BOOK_DAY_THRESHOLD. Both kinds of extra
-// catch-up day displace reading days rather than extending the plan: the
-// real content is squeezed into `duration` minus however many catch-up days
-// are needed, so the final result is still exactly `duration` days long.
+// Build one track's day-by-day plan, reserving some of it as user-requested
+// catch-up days — `extra_catchup_days` spread evenly across the whole
+// schedule, plus `catchup_after_books[title]` right after every finished
+// pass of that book. These displace reading days rather than extending the
+// plan: the real content is squeezed into `duration` minus however many
+// catch-up days are needed, so the final result is still exactly
+// `duration` days long.
 fn build_track_plan(
     bible_data: Vec<ChapterData>,
     chapter_data: Vec<ChapterData>,
     duration: i32,
     extra_catchup_days: i32,
-    catchup_after_long_books: bool,
+    catchup_after_books: &HashMap<String, u32>,
 ) -> Vec<ChaptersDays> {
+    // `bible_data` has one entry per pass of each book, so this counts a
+    // book read twice twice.
+    let after_books_days: i32 = bible_data.iter()
+        .filter_map(|book| catchup_after_books.get(&book.title))
+        .map(|&count| count as i32)
+        .sum();
     let extra_catchup_days = extra_catchup_days.max(0);
-    let target_after_extra = (duration - extra_catchup_days).max(1);
+    let target_after_extra = (duration - extra_catchup_days - after_books_days).max(1);
 
-    // Identify which book titles are long enough to warrant a catch-up day
-    // after each finished run, using a first pass against the full
-    // duration — shaving off a handful of days for catch-up essentially
-    // never changes which books cross the threshold.
-    let long_book_titles: HashSet<String> = if catchup_after_long_books {
-        get_books_in_days(bible_data.clone(), duration)
-            .iter()
-            .filter(|d| d.titles.len() == 1 && d.days >= LONG_BOOK_DAY_THRESHOLD)
-            .map(|d| d.titles[0].clone())
-            .collect()
-    } else {
-        HashSet::new()
-    };
-
-    // How many days to spend on real content, leaving the rest for
-    // long-book catch-up days. Guessing this from a single probe pass isn't
-    // exact — shrinking the duration to make room for catch-up days can
-    // itself shift exactly where a book's run ends relative to the next, in
-    // or out of counting as a transition — so this re-measures the actual
-    // count each time and nudges the guess until it converges, rather than
-    // trusting the first estimate.
+    // How many days to spend on real content. Guessing this from a single
+    // probe pass isn't exact — `adjust_days` has its own internal leftover-
+    // day handling whose output length can shift slightly with the content
+    // duration it's given — so this re-measures the actual count each time
+    // and nudges the guess until it converges, rather than trusting the
+    // first estimate.
     let mut content_duration = target_after_extra;
     let mut plan = Vec::new();
     for _ in 0..6 {
         let tcd = get_books_in_days(bible_data.clone(), content_duration);
         let tcd2 = get_chapters_days_by_length(chapter_data.clone(), tcd, content_duration);
-        let mut candidate = adjust_days(tcd2, bible_data.clone(), content_duration);
-
-        if !long_book_titles.is_empty() {
-            for &i in long_book_transitions(&candidate, &long_book_titles).iter().rev() {
-                insert_new_element(&mut candidate, i, "Catch-up day".to_string(), 0);
-            }
-        }
+        let candidate = adjust_days(tcd2, bible_data.clone(), content_duration);
 
         let overshoot = candidate.len() as i32 - target_after_extra;
         plan = candidate;
@@ -2482,6 +2756,10 @@ fn build_track_plan(
             break;
         }
         content_duration = (content_duration - overshoot).max(1);
+    }
+
+    if after_books_days > 0 {
+        plan = insert_catchup_after_books(plan, &bible_data, catchup_after_books);
     }
 
     // Unconditional safety net: whatever the loop above converged to (or
@@ -2506,19 +2784,41 @@ fn build_track_plan(
     plan
 }
 
-// Index of every entry in `entries` that's the last day of a run of a
-// single title in `titles`, i.e. a point where a catch-up day belongs right
-// after. Excludes the very end of `entries` — there's nothing left to catch
-// up before.
-fn long_book_transitions(entries: &[ChaptersDays], titles: &HashSet<String>) -> Vec<usize> {
-    entries.iter().enumerate()
-        .filter(|(i, day)| {
-            day.titles.len() == 1
-                && titles.contains(&day.titles[0])
-                && entries.get(i + 1).is_some_and(|next| next.titles != day.titles)
-        })
-        .map(|(i, _)| i)
-        .collect()
+// Insert `catchup_after_books[title]` catch-up days right after every day in
+// `plan` that finishes a pass of that book, renumbering `.days` to be
+// sequential across the result. A book finishes on a day that either shares
+// it with other books (combined days always hold whole books) or reads it
+// alone through its last chapter. If a short book shares its last day with
+// the books after it, the catch-up days follow that whole shared day.
+fn insert_catchup_after_books(
+    plan: Vec<ChaptersDays>,
+    bible_data: &[ChapterData],
+    catchup_after_books: &HashMap<String, u32>,
+) -> Vec<ChaptersDays> {
+    let book_chapters: HashMap<&str, i32> = bible_data.iter()
+        .map(|book| (book.title.as_str(), book.chapters))
+        .collect();
+
+    let mut result = Vec::with_capacity(plan.len());
+    let mut day = 1i32;
+    for mut entry in plan {
+        let catchup_count: u32 = entry.titles.iter()
+            .filter(|title| {
+                entry.titles.len() > 1 || book_chapters.get(title.as_str()) == Some(&entry.chapters)
+            })
+            .filter_map(|title| catchup_after_books.get(title))
+            .sum();
+
+        entry.days = day;
+        day += 1;
+        result.push(entry);
+        for _ in 0..catchup_count {
+            result.push(ChaptersDays { titles: vec!["Catch-up day".to_string()], chapters: 0, days: day });
+            day += 1;
+        }
+    }
+
+    result
 }
 
 fn get_daily_reading_lengths(adjusted_plan: Vec<ChaptersDays>, chapter_data: Vec<ChapterData>) -> Vec<DailyLength> {
