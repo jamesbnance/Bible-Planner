@@ -56,6 +56,10 @@ const BOOK_NAMES: [&str; 66] = [
     "Jude", "Revelation",
 ];
 
+// Narrowest track width (in points) that fits the read-times radios and the
+// Clear button on one row, with room for the "Multiple times" count field.
+const TRACK_SIDES_MIN_WIDTH: f32 = 400.0;
+
 // Quick-select groups: (button label, first 0-based index, last 0-based index)
 const BOOK_GROUPS: &[(&str, usize, usize)] = &[
     ("Entire Bible",   0,  65),
@@ -134,32 +138,44 @@ impl ReadingTrack {
         });
 
         ui.add_space(4.0);
-        egui::Sides::new().show(
-            ui,
-            |ui| {
-                contrast_radio_value(ui, &mut self.read_times, 1, "Once");
-                contrast_radio_value(ui, &mut self.read_times, 2, "Twice");
-                let multi = self.read_times >= 3;
-                if contrast_radio(ui, multi, "Multiple times").clicked() && !multi {
-                    self.read_times = 3;
-                }
-                if multi {
-                    ui.add(egui::DragValue::new(&mut self.read_times).range(3u32..=52));
-                }
-            },
-            |ui| {
-                // Styled as a plain gray outline so it reads as a distinct,
-                // less-frequent action than the filled quick-select pills.
-                let gray = egui::Color32::from_gray(130);
-                let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
-                if outline_button(ui, "Clear", gray, gray_hover).clicked() {
-                    self.selected = vec![false; 66];
-                }
-            },
-        );
+        let read_times_radios = |ui: &mut egui::Ui, read_times: &mut u32| {
+            contrast_radio_value(ui, read_times, 1, "Once");
+            contrast_radio_value(ui, read_times, 2, "Twice");
+            let multi = *read_times >= 3;
+            if contrast_radio(ui, multi, "Multiple times").clicked() && !multi {
+                *read_times = 3;
+            }
+            if multi {
+                ui.add(egui::DragValue::new(read_times).range(3u32..=52));
+            }
+        };
+        let clear_button = |ui: &mut egui::Ui, selected: &mut Vec<bool>| {
+            // Styled as a plain gray outline so it reads as a distinct,
+            // less-frequent action than the filled quick-select pills.
+            let gray = egui::Color32::from_gray(130);
+            let gray_hover = if ui.visuals().dark_mode { shade(gray, 40) } else { shade(gray, -40) };
+            if outline_button(ui, "Clear", gray, gray_hover).clicked() {
+                *selected = vec![false; 66];
+            }
+        };
+        // `Sides` keeps Clear pinned to the right edge, but can't wrap — on a
+        // phone-width screen it would overlap itself and push the whole form
+        // wider than the screen — so narrow tracks wrap the row instead.
+        if ui.available_width() >= TRACK_SIDES_MIN_WIDTH {
+            egui::Sides::new().show(
+                ui,
+                |ui| read_times_radios(ui, &mut self.read_times),
+                |ui| clear_button(ui, &mut self.selected),
+            );
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                read_times_radios(ui, &mut self.read_times);
+                clear_button(ui, &mut self.selected);
+            });
+        }
 
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             contrast_radio_value(ui, &mut self.fixed_pace, false, "Balance across duration");
             contrast_radio_value(ui, &mut self.fixed_pace, true, "Fixed chapters/day");
             if self.fixed_pace {
@@ -345,6 +361,8 @@ fn outline_button(ui: &mut egui::Ui, label: &str, base: egui::Color32, hover: eg
 fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui::Response {
     let dark_mode = ui.visuals().dark_mode;
     let is_checked = *checked;
+    let wrap_mode = label_wrap_mode(ui, label);
+    wrap_row_if_needed(ui, label);
     ui.horizontal(|ui| {
         // The box and label are drawn as two separate widgets rather than one
         // `ui.checkbox()` call: egui derives both the checkmark color and the
@@ -371,7 +389,7 @@ fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui
         })
         .inner;
 
-        let text_response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        let text_response = ui.add(egui::Label::new(label).wrap_mode(wrap_mode).sense(egui::Sense::click()));
         if text_response.clicked() {
             *checked = !*checked;
             response.mark_changed();
@@ -381,10 +399,55 @@ fn contrast_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui
     .inner
 }
 
+// contrast_checkbox/contrast_radio draw their box and label inside a nested
+// `ui.horizontal`, which a parent `horizontal_wrapped` row places at its
+// cursor as one unit without ever wrapping it — so on a narrow (phone)
+// screen a row of them ran off the edge, widening the whole form with it.
+// Starting a new row first whenever the control won't fit restores wrapping.
+fn wrap_row_if_needed(ui: &mut egui::Ui, label: &str) {
+    let layout = ui.layout();
+    if !(layout.is_horizontal() && layout.main_wrap()) {
+        return;
+    }
+    let at_row_start = ui.cursor().min.x <= ui.max_rect().min.x + 1.0;
+    if at_row_start {
+        return;
+    }
+    if control_width(ui, label) > ui.available_size_before_wrap().x {
+        ui.end_row();
+    }
+}
+
+// Unwrapped width of a contrast_checkbox/contrast_radio: box, label, and
+// the spacing around them.
+fn control_width(ui: &egui::Ui, label: &str) -> f32 {
+    let text_width = egui::WidgetText::from(label)
+        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body)
+        .size()
+        .x;
+    let spacing = ui.spacing();
+    spacing.icon_width + 2.0 * spacing.button_padding.x + 2.0 * spacing.item_spacing.x + text_width
+}
+
+// A control's label normally stays on one line, but wraps when it's wider
+// than the whole area it's in (e.g. a long option in a dialog on a phone
+// screen) rather than overflowing it. Measured against the full area, not
+// the space left at the cursor: in a Grid, a cell's space left can be
+// near zero on the first frame, which would wrap a label to a letter a line.
+fn label_wrap_mode(ui: &egui::Ui, label: &str) -> egui::TextWrapMode {
+    if control_width(ui, label) > ui.max_rect().width() {
+        egui::TextWrapMode::Wrap
+    } else {
+        egui::TextWrapMode::Extend
+    }
+}
+
 // A radio button styled to match contrast_checkbox — solid accent fill with
 // a light inner dot instead of the default thin ring/dot.
 fn contrast_radio(ui: &mut egui::Ui, checked: bool, label: &str) -> egui::Response {
     let dark_mode = ui.visuals().dark_mode;
+    let wrap_mode = label_wrap_mode(ui, label);
+    wrap_row_if_needed(ui, label);
     ui.horizontal(|ui| {
         let radio_response = ui.scope(|ui| {
             if checked {
@@ -404,7 +467,7 @@ fn contrast_radio(ui: &mut egui::Ui, checked: bool, label: &str) -> egui::Respon
         })
         .inner;
 
-        let text_response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        let text_response = ui.add(egui::Label::new(label).wrap_mode(wrap_mode).sense(egui::Sense::click()));
         radio_response.union(text_response)
     })
     .inner
@@ -489,6 +552,20 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 // physical window size would leave fewer usable points at higher scales,
 // requiring the user to manually widen/heighten the window.
 const WINDOW_SIZE: [f32; 2] = [560.0, 820.0];
+
+// Below this many points of width (e.g. a phone held upright), the layout
+// tightens its margins and dialogs shrink to fit the screen.
+const NARROW_SCREEN_WIDTH: f32 = 500.0;
+
+// Size a dialog's contents to its preferred minimum width, but never wider
+// than the screen allows (minus its 24-point side padding and a little
+// breathing room) — on a narrow screen, both the minimum and any long
+// wrapping text would otherwise push the dialog off the screen's edge.
+fn fit_dialog_width(ui: &mut egui::Ui, preferred_min: f32) {
+    let max_width = (ui.ctx().content_rect().width() - 2.0 * 24.0 - 16.0).max(0.0);
+    ui.set_max_width(max_width);
+    ui.set_min_width(preferred_min.min(max_width));
+}
 
 // Key settings are saved under, whether that's a browser's localStorage (web)
 // or a file of the same name (native).
@@ -743,17 +820,23 @@ impl eframe::App for BiblePlannerApp {
             egui::Visuals::light()
         });
         if self.applied_ui_scale != Some(self.ui_scale) {
+            // The UI scale is applied as a zoom factor — a multiple of the
+            // screen's own pixel density — rather than as an absolute
+            // pixels_per_point. An absolute value ignores the density
+            // entirely: on a 3x iPhone screen, 1.2 pixels per point drew the
+            // whole app at 40% of its normal size.
+            //
             // Scale the window's current logical size by the change in scale,
             // instead of resetting to a fixed size — that keeps a pinned/
             // snapped window's position and proportions instead of snapping
             // it back to a default box that can spill past the pinned area.
-            let old_scale = ui.ctx().pixels_per_point();
+            let old_scale = ui.ctx().zoom_factor();
             let current_size = ui
                 .ctx()
                 .input(|i| i.viewport().inner_rect)
                 .map_or(egui::Vec2::from(WINDOW_SIZE), |r| r.size());
             let new_size = current_size * (self.ui_scale / old_scale);
-            ui.ctx().set_pixels_per_point(self.ui_scale);
+            ui.ctx().set_zoom_factor(self.ui_scale);
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::InnerSize(new_size));
             self.applied_ui_scale = Some(self.ui_scale);
@@ -767,19 +850,23 @@ impl eframe::App for BiblePlannerApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).fill(canvas_fill).inner_margin(0))
             .show(ui, |ui| {
+                // Phone-width screens get slimmer side margins so the form
+                // fills nearly the whole width instead of losing a chunk of
+                // an already-narrow screen to empty space.
+                let side_margin = if ui.available_width() < NARROW_SCREEN_WIDTH { 6 } else { 20 };
                 egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(20, 16))
+                    .inner_margin(egui::Margin::symmetric(side_margin, 16))
                     .show(ui, |ui| {
                         // Cap the form to a comfortable reading width and
                         // center it, rather than letting it stretch
                         // edge-to-edge on wide (e.g. desktop browser) windows.
                         // egui's own sizes are all in logical points, which
-                        // grow in on-screen pixels as the UI scale goes up —
-                        // dividing by pixels_per_point keeps the cap at a
-                        // constant 1000 screen pixels at any scale, rather
-                        // than 1000 points (1600 screen pixels at 1.6x).
+                        // grow on screen as the UI scale goes up — dividing
+                        // by the zoom factor keeps the cap at a constant 1000
+                        // screen (CSS) pixels at any scale, rather than 1000
+                        // points (1600 screen pixels at 1.6x).
                         const MAX_CONTENT_WIDTH_PX: f32 = 1000.0;
-                        let max_content_width = MAX_CONTENT_WIDTH_PX / ui.ctx().pixels_per_point();
+                        let max_content_width = MAX_CONTENT_WIDTH_PX / ui.ctx().zoom_factor();
                         let content_width = ui.available_width().min(max_content_width);
                         let margin = (ui.available_width() - content_width) / 2.0;
                         // Plain `ui.horizontal` only allocates a single
@@ -838,9 +925,12 @@ impl BiblePlannerApp {
                 egui::vec2(ui.available_width(), 40.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
+                    // Smaller on phone-width screens, where the full-size
+                    // title is wider than the screen itself.
+                    let title_size = if ui.available_width() < NARROW_SCREEN_WIDTH { 22.0 } else { 30.0 };
                     ui.label(
                         egui::RichText::new("Bible Reading Planner")
-                            .size(30.0)
+                            .size(title_size)
                             .strong()
                             .color(accent),
                     );
@@ -870,6 +960,7 @@ impl BiblePlannerApp {
                         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
                         .corner_radius(4.0)
                         .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
                             if track.show(ui, idx, removable) {
                                 to_remove = Some(idx);
                             }
@@ -939,7 +1030,7 @@ impl BiblePlannerApp {
 
                         ui.add_space(4.0);
                         // `horizontal` places widgets side-by-side on one line.
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Skip weekdays:");
                             let names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
                             for (i, name) in names.iter().enumerate() {
@@ -1150,7 +1241,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("settings_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(320.0);
+            fit_dialog_width(ui, 320.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1229,7 +1320,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("reading_plan_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(340.0);
+            fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1299,7 +1390,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("catchup_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(340.0);
+            fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1428,7 +1519,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("output_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(360.0);
+            fit_dialog_width(ui, 360.0);
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 24.0),
@@ -1535,7 +1626,7 @@ impl BiblePlannerApp {
         let theme = if self.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
         let frame = egui::Frame::popup(&ctx.style_of(theme)).inner_margin(egui::Margin::symmetric(24, 16));
         let modal = egui::Modal::new(egui::Id::new("catchup_warning_modal")).frame(frame).show(ctx, |ui| {
-            ui.set_min_width(340.0);
+            fit_dialog_width(ui, 340.0);
             ui.add_space(8.0);
             ui.heading("Mostly Catch-up Days");
             ui.add_space(8.0);
